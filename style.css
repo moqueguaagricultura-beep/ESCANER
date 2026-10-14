@@ -103,19 +103,28 @@ main { flex: 1; position: relative; overflow: hidden; }
   pointer-events: none;
 }
 .camera-frame {
-  position: absolute; inset: 0;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 82%;
+  aspect-ratio: 1 / 1.414; /* A4 Vertical exact ratio */
+  max-height: 84%;
   pointer-events: none;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.28);
+  border: 1px dashed rgba(255, 255, 255, 0.35);
+  border-radius: 8px;
 }
 .corner {
   position: absolute;
-  width: 28px; height: 28px;
-  border-color: var(--accent);
+  width: 24px; height: 24px;
+  border-color: #22c55e;
   border-style: solid;
 }
-.corner.tl { top: 20px; left: 20px; border-width: 3px 0 0 3px; border-radius: 4px 0 0 0; }
-.corner.tr { top: 20px; right: 20px; border-width: 3px 3px 0 0; border-radius: 0 4px 0 0; }
-.corner.bl { bottom: 20px; left: 20px; border-width: 0 0 3px 3px; border-radius: 0 0 0 4px; }
-.corner.br { bottom: 20px; right: 20px; border-width: 0 3px 3px 0; border-radius: 0 0 4px 0; }
+.corner.tl { top: -2px; left: -2px; border-width: 4px 0 0 4px; border-radius: 6px 0 0 0; }
+.corner.tr { top: -2px; right: -2px; border-width: 4px 4px 0 0; border-radius: 0 6px 0 0; }
+.corner.bl { bottom: -2px; left: -2px; border-width: 0 0 4px 4px; border-radius: 0 0 0 6px; }
+.corner.br { bottom: -2px; right: -2px; border-width: 0 4px 4px 0; border-radius: 0 0 6px 0; }
 
 .camera-hints {
   position: absolute; bottom: 8px; left: 0; right: 0;

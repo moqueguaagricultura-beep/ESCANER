@@ -27,6 +27,7 @@ const state = {
   pdfQuality: 0.8,
   detectionInterval: null,
   detectedRect: null,   // {x,y,w,h} relative to video
+  detectedCorners: null, // {tl, tr, br, bl} normalized
   continuousMode: false, // fast continuous scan mode
 };
 
@@ -57,8 +58,7 @@ const pagesView    = $('pagesView');
 const btnCapture    = $('btnCapture');
 const btnFlash      = $('btnFlash');
 const btnAutoDetect = $('btnAutoDetect');
-const btnContinuous = $('btnContinuous');    // ← NEW: Fast continuous scan
-const btnSwitchCam  = $('btnSwitchCam');
+const btnContinuous = $('btnContinuous');    // ← Fast continuous scan
 const btnGallery    = $('btnGallery');
 const btnViewPages  = $('btnViewPages');
 const btnPages      = $('btnPages');
@@ -156,7 +156,7 @@ async function startCamera() {
   try {
     const constraints = {
       video: {
-        facingMode: { ideal: state.facingMode },
+        facingMode: { ideal: 'environment' },
         width: { ideal: 1920 },
         height: { ideal: 1080 },
       },
@@ -219,7 +219,7 @@ function detectDocument() {
   overlayCanvas.width = vw;
   overlayCanvas.height = vh;
 
-  // Sample the video frame into a small temp canvas for analysis
+  // Sample video frame into temp canvas for fast corner analysis
   const tmpW = 320, tmpH = Math.round(vh / vw * 320);
   const tmp = document.createElement('canvas');
   tmp.width = tmpW; tmp.height = tmpH;
@@ -227,75 +227,108 @@ function detectDocument() {
   tCtx.drawImage(video, 0, 0, tmpW, tmpH);
 
   const imageData = tCtx.getImageData(0, 0, tmpW, tmpH);
-  const rect = findDocumentRect(imageData, tmpW, tmpH);
+  const corners = findA4Corners(imageData, tmpW, tmpH);
 
   clearOverlay();
-  if (rect) {
-    // Scale rect back to full video size
+  if (corners) {
     const scaleX = vw / tmpW;
     const scaleY = vh / tmpH;
-    const rx = rect.x * scaleX;
-    const ry = rect.y * scaleY;
-    const rw = rect.w * scaleX;
-    const rh = rect.h * scaleY;
 
-    // Draw guide overlay
+    // Convert corners to full video coordinates
+    const scaledCorners = {
+      tl: { x: corners.tl.x * scaleX, y: corners.tl.y * scaleY },
+      tr: { x: corners.tr.x * scaleX, y: corners.tr.y * scaleY },
+      br: { x: corners.br.x * scaleX, y: corners.br.y * scaleY },
+      bl: { x: corners.bl.x * scaleX, y: corners.bl.y * scaleY }
+    };
+
+    // Draw polygon connecting all 4 detected corners
     overlayCtx.save();
-    overlayCtx.strokeStyle = 'rgba(34,197,94,0.9)';
+    overlayCtx.strokeStyle = 'rgba(34, 197, 94, 0.95)';
+    overlayCtx.fillStyle = 'rgba(34, 197, 94, 0.12)';
     overlayCtx.lineWidth = 3;
-    overlayCtx.setLineDash([]);
-    overlayCtx.strokeRect(rx, ry, rw, rh);
+    overlayCtx.beginPath();
+    overlayCtx.moveTo(scaledCorners.tl.x, scaledCorners.tl.y);
+    overlayCtx.lineTo(scaledCorners.tr.x, scaledCorners.tr.y);
+    overlayCtx.lineTo(scaledCorners.br.x, scaledCorners.br.y);
+    overlayCtx.lineTo(scaledCorners.bl.x, scaledCorners.bl.y);
+    overlayCtx.closePath();
+    overlayCtx.fill();
+    overlayCtx.stroke();
 
-    // Corners
-    const cSize = 20;
-    overlayCtx.lineWidth = 4;
-    [[rx,ry],[rx+rw,ry],[rx,ry+rh],[rx+rw,ry+rh]].forEach(([cx,cy],i) => {
-      const xd = i % 2 === 0 ? 1 : -1;
-      const yd = i < 2 ? 1 : -1;
+    // Draw high-visibility corner target marks at each of the 4 corners
+    const pts = [
+      { p: scaledCorners.tl, label: 'TL', dx: 1, dy: 1 },
+      { p: scaledCorners.tr, label: 'TR', dx: -1, dy: 1 },
+      { p: scaledCorners.br, label: 'BR', dx: -1, dy: -1 },
+      { p: scaledCorners.bl, label: 'BL', dx: 1, dy: -1 }
+    ];
+
+    pts.forEach(({ p, dx, dy }) => {
+      // Circle at corner
       overlayCtx.beginPath();
-      overlayCtx.moveTo(cx, cy + yd * cSize);
-      overlayCtx.lineTo(cx, cy);
-      overlayCtx.lineTo(cx + xd * cSize, cy);
+      overlayCtx.arc(p.x, p.y, 7, 0, 2 * Math.PI);
+      overlayCtx.fillStyle = '#22c55e';
+      overlayCtx.fill();
+      overlayCtx.lineWidth = 2;
+      overlayCtx.strokeStyle = '#ffffff';
+      overlayCtx.stroke();
+
+      // Corner bracket
+      const bSize = 22;
+      overlayCtx.beginPath();
+      overlayCtx.lineWidth = 4;
+      overlayCtx.strokeStyle = '#22c55e';
+      overlayCtx.moveTo(p.x, p.y + dy * bSize);
+      overlayCtx.lineTo(p.x, p.y);
+      overlayCtx.lineTo(p.x + dx * bSize, p.y);
       overlayCtx.stroke();
     });
+
     overlayCtx.restore();
 
-    state.detectedRect = { x: rx/vw, y: ry/vh, w: rw/vw, h: rh/vh };
-    hintText.textContent = '✓ Documento detectado — ¡Captura!';
+    state.detectedCorners = {
+      tl: { x: scaledCorners.tl.x / vw, y: scaledCorners.tl.y / vh },
+      tr: { x: scaledCorners.tr.x / vw, y: scaledCorners.tr.y / vh },
+      br: { x: scaledCorners.br.x / vw, y: scaledCorners.br.y / vh },
+      bl: { x: scaledCorners.bl.x / vw, y: scaledCorners.bl.y / vh }
+    };
+    hintText.textContent = '✓ 4 Esquinas A4 Encuadradas — ¡Captura!';
     hintText.style.color = '#22c55e';
   } else {
-    state.detectedRect = null;
-    hintText.textContent = 'Apunta a un documento A4';
+    state.detectedCorners = null;
+    hintText.textContent = 'Alinea la hoja A4 vertical en las 4 esquinas';
     hintText.style.color = '';
   }
 }
 
 /**
- * Enhanced document detector specifically tuned for A4 pages in folders/binders.
- * Uses Otsu auto-thresholding + edge contrast + A4 aspect ratio verification.
+ * Robust 4-corner detector for vertical A4 sheets.
+ * Evaluates edge contours and searches for the optimal 4 vertices
+ * matching the 1:1.414 vertical aspect ratio.
  */
-function findDocumentRect(imageData, w, h) {
+function findA4Corners(imageData, w, h) {
   const data = imageData.data;
   const n = w * h;
 
-  // Grayscale conversion
+  // Grayscale
   const gray = new Uint8Array(n);
   for (let i = 0; i < n; i++) {
-    gray[i] = (data[i*4] * 0.299 + data[i*4+1] * 0.587 + data[i*4+2] * 0.114) | 0;
+    gray[i] = (data[i * 4] * 0.299 + data[i * 4 + 1] * 0.587 + data[i * 4 + 2] * 0.114) | 0;
   }
 
-  // 1. Otsu threshold to separate page from folder background
+  // Otsu automatic thresholding
   const hist = new Int32Array(256);
   for (let i = 0; i < n; i++) hist[gray[i]]++;
 
   let sum = 0;
   for (let i = 0; i < 256; i++) sum += i * hist[i];
 
-  let sumB = 0, wB = 0, wF = 0, varMax = 0, threshold = 128;
+  let sumB = 0, wB = 0, varMax = 0, threshold = 120;
   for (let t = 0; t < 256; t++) {
     wB += hist[t];
     if (wB === 0) continue;
-    wF = n - wB;
+    const wF = n - wB;
     if (wF === 0) break;
     sumB += t * hist[t];
     const mB = sumB / wB;
@@ -307,62 +340,109 @@ function findDocumentRect(imageData, w, h) {
     }
   }
 
-  // 2. Scan lines to find bounds of the bright (document) region
-  // Horizontal bounds (left/right)
-  const colCounts = new Int32Array(w);
-  for (let x = 0; x < w; x++) {
-    for (let y = 0; y < h; y++) {
-      if (gray[y * w + x] > threshold) colCounts[x]++;
-    }
+  // Binary mask of bright paper
+  const binary = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    binary[i] = gray[i] >= threshold ? 1 : 0;
   }
 
-  // Vertical bounds (top/bottom)
-  const rowCounts = new Int32Array(h);
+  // Scan row/col density to find initial bounding box
+  const colSum = new Int32Array(w);
+  const rowSum = new Int32Array(h);
   for (let y = 0; y < h; y++) {
+    const rowIdx = y * w;
     for (let x = 0; x < w; x++) {
-      if (gray[y * w + x] > threshold) rowCounts[y]++;
+      if (binary[rowIdx + x]) {
+        colSum[x]++;
+        rowSum[y]++;
+      }
     }
   }
 
-  // Need at least 25% of column to be considered document
-  const minCol = Math.round(h * 0.25);
-  const minRow = Math.round(w * 0.25);
+  const minC = Math.round(h * 0.20);
+  const minR = Math.round(w * 0.20);
 
-  let left = 0, right = w - 1, top = 0, bot = h - 1;
+  let minX = 0, maxX = w - 1, minY = 0, maxY = h - 1;
+  for (let x = 0; x < w; x++) { if (colSum[x] > minC) { minX = x; break; } }
+  for (let x = w - 1; x >= 0; x--) { if (colSum[x] > minC) { maxX = x; break; } }
+  for (let y = 0; y < h; y++) { if (rowSum[y] > minR) { minY = y; break; } }
+  for (let y = h - 1; y >= 0; y--) { if (rowSum[y] > minR) { maxY = y; break; } }
 
-  for (let x = 0; x < w; x++) {
-    if (colCounts[x] > minCol) { left = x; break; }
+  const boxW = maxX - minX;
+  const boxH = maxY - minY;
+
+  // Must cover at least 32% of screen width & 38% height
+  if (boxW < w * 0.32 || boxH < h * 0.38) return null;
+
+  // Verify vertical orientation (height should be larger than width: A4 portrait)
+  const ratio = boxH / boxW;
+  if (ratio < 1.05 || ratio > 1.95) return null;
+
+  // Find the exact 4 corners by finding paper points closest to bounding box corners
+  // Corner 1: Top-Left (minimizes x + y)
+  // Corner 2: Top-Right (maximizes x - y)
+  // Corner 3: Bottom-Right (maximizes x + y)
+  // Corner 4: Bottom-Left (minimizes x - y)
+  let tl = { x: minX, y: minY }, bestTL = 1e9;
+  let tr = { x: maxX, y: minY }, bestTR = -1e9;
+  let br = { x: maxX, y: maxY }, bestBR = -1e9;
+  let bl = { x: minX, y: maxY }, bestBL = 1e9;
+
+  const bandH = Math.round(boxH * 0.28);
+  const bandW = Math.round(boxW * 0.28);
+
+  // Scan top band for TL and TR
+  for (let y = minY; y <= minY + bandH; y++) {
+    const rIdx = y * w;
+    for (let x = minX; x <= maxX; x++) {
+      if (binary[rIdx + x]) {
+        // TL candidate (left side)
+        if (x <= minX + bandW) {
+          const score = (x - minX) * 1.2 + (y - minY) * 1.0;
+          if (score < bestTL) { bestTL = score; tl = { x, y }; }
+        }
+        // TR candidate (right side)
+        if (x >= maxX - bandW) {
+          const score = (maxX - x) * 1.2 + (y - minY) * 1.0;
+          if (score < bestTR || bestTR === -1e9) {
+            // we want to minimize distance to (maxX, minY)
+            const dist = (maxX - x) * 1.2 + (y - minY) * 1.0;
+            if (bestTR === -1e9 || dist < bestTR) { bestTR = dist; tr = { x, y }; }
+          }
+        }
+      }
+    }
   }
-  for (let x = w - 1; x >= 0; x--) {
-    if (colCounts[x] > minCol) { right = x; break; }
+
+  // Scan bottom band for BL and BR
+  for (let y = maxY; y >= maxY - bandH; y--) {
+    const rIdx = y * w;
+    for (let x = minX; x <= maxX; x++) {
+      if (binary[rIdx + x]) {
+        // BL candidate (left side)
+        if (x <= minX + bandW) {
+          const dist = (x - minX) * 1.2 + (maxY - y) * 1.0;
+          if (bestBL === 1e9 || dist < bestBL) { bestBL = dist; bl = { x, y }; }
+        }
+        // BR candidate (right side)
+        if (x >= maxX - bandW) {
+          const dist = (maxX - x) * 1.2 + (maxY - y) * 1.0;
+          if (bestBR === -1e9 || dist < bestBR) { bestBR = dist; br = { x, y }; }
+        }
+      }
+    }
   }
-  for (let y = 0; y < h; y++) {
-    if (rowCounts[y] > minRow) { top = y; break; }
-  }
-  for (let y = h - 1; y >= 0; y--) {
-    if (rowCounts[y] > minRow) { bot = y; break; }
-  }
 
-  const rectW = right - left;
-  const rectH = bot - top;
-
-  // Validation: document must occupy at least 35% of frame
-  if (rectW < w * 0.35 || rectH < h * 0.35) return null;
-
-  // Check aspect ratio (A4 portrait = 1.414; landscape = 0.707; accept 0.65 - 2.1)
-  const ratio = rectH / rectW;
-  if (ratio < 0.65 || ratio > 2.2) return null;
-
-  return { x: left, y: top, w: rectW, h: rectH };
+  return { tl, tr, br, bl };
 }
 
 // ─────────────────────────────────────────
-//  CAPTURE
+//  CAPTURE & PERSPECTIVE RECTIFICATION
 // ─────────────────────────────────────────
 async function captureFrame() {
   if (!video.videoWidth) return;
 
-  // Flash effect
+  // Flash animation
   flashOverlay.classList.add('flash');
   btnCapture.classList.add('capturing');
   setTimeout(() => {
@@ -370,7 +450,7 @@ async function captureFrame() {
     btnCapture.classList.remove('capturing');
   }, 300);
 
-  // Grab full frame
+  // Capture full resolution frame
   const vw = video.videoWidth;
   const vh = video.videoHeight;
   const capCanvas = document.createElement('canvas');
@@ -382,71 +462,97 @@ async function captureFrame() {
   let processedCanvas;
   let wasAutoCorrected = false;
 
-  if (state.perspCorrect && state.detectedRect) {
-    processedCanvas = cropAndCorrect(capCanvas, state.detectedRect, vw, vh);
+  if (state.perspCorrect && state.detectedCorners) {
+    // 4-corner perspective unwarping directly into A4 vertical canvas
+    processedCanvas = unwarp4CornersToA4(capCanvas, state.detectedCorners, vw, vh);
     wasAutoCorrected = true;
   } else {
-    // Even without detected rect, try an aggressive auto-crop
-    processedCanvas = autoCropWhiteBorders(capCanvas);
-    wasAutoCorrected = processedCanvas !== capCanvas;
+    // Fallback automatic border cleanup and fit to A4
+    const cropped = autoCropWhiteBorders(capCanvas);
+    processedCanvas = resizeToA4(cropped);
+    wasAutoCorrected = cropped !== capCanvas;
   }
 
-  // Resize to A4
-  const a4Canvas = resizeToA4(processedCanvas);
-  state.currentCaptured = a4Canvas;
+  state.currentCaptured = processedCanvas;
   previewRotation   = 0;
   previewFilter     = 'original';
   previewBrightness = 0;
   previewContrast   = 0;
 
-  // Update preview page number (will be page N+1)
   if (previewPageNumEl) previewPageNumEl.textContent = state.pages.length + 1;
-
-  // Update saved counter
   updateSavedCounter();
 
-  // In CONTINUOUS MODE: auto-save and stay in camera view (lightning fast for 100+ pages)
+  // In CONTINUOUS MODE: auto-save and stay in camera view (lightning fast)
   if (state.continuousMode) {
     saveCurrentPage();
     state.currentCaptured = null;
     updateUI();
-    showToast(`✓ Página ${state.pages.length} escaneada`);
-    return; // Stay in camera!
+    showToast(`✓ Página ${state.pages.length} escaneada y encuadrada`);
+    return;
   }
 
   showView('previewView');
   renderPreview();
 
-  // Show correction badge
   if (wasAutoCorrected && correctionBadge) {
     correctionBadge.classList.remove('hidden');
-    // Remove after animation completes (3s)
     setTimeout(() => correctionBadge.classList.add('hidden'), 3200);
   }
 }
 
 /**
- * Crop the image to the detected rectangle and output as A4 canvas
+ * Rectifies the 4 corners of the document into a perfect vertical A4 canvas (A4_W x A4_H).
+ * Uses bilinear backward mapping interpolation.
  */
-function cropAndCorrect(srcCanvas, rect, vw, vh) {
-  const x = Math.round(rect.x * vw);
-  const y = Math.round(rect.y * vh);
-  const w = Math.round(rect.w * vw);
-  const h = Math.round(rect.h * vh);
+function unwarp4CornersToA4(srcCanvas, cornersNorm, vw, vh) {
+  const outCanvas = document.createElement('canvas');
+  outCanvas.width = A4_W;
+  outCanvas.height = A4_H;
+  const outCtx = outCanvas.getContext('2d');
 
-  // Add a small padding so we don't cut edges
-  const padX = Math.round(w * 0.01);
-  const padY = Math.round(h * 0.01);
-  const cx = Math.max(0, x - padX);
-  const cy = Math.max(0, y - padY);
-  const cw = Math.min(vw - cx, w + padX * 2);
-  const ch = Math.min(vh - cy, h + padY * 2);
+  // Corner coordinates in source canvas pixels
+  const c = {
+    tl: { x: cornersNorm.tl.x * vw, y: cornersNorm.tl.y * vh },
+    tr: { x: cornersNorm.tr.x * vw, y: cornersNorm.tr.y * vh },
+    br: { x: cornersNorm.br.x * vw, y: cornersNorm.br.y * vh },
+    bl: { x: cornersNorm.bl.x * vw, y: cornersNorm.bl.y * vh }
+  };
 
-  const out = document.createElement('canvas');
-  out.width = cw; out.height = ch;
-  const ctx = out.getContext('2d');
-  ctx.drawImage(srcCanvas, cx, cy, cw, ch, 0, 0, cw, ch);
-  return out;
+  const srcCtx = srcCanvas.getContext('2d');
+  const srcData = srcCtx.getImageData(0, 0, vw, vh);
+  const outData = outCtx.createImageData(A4_W, A4_H);
+
+  const sPixels = srcData.data;
+  const dPixels = outData.data;
+
+  // Bilinear transform mapping each pixel in output A4 to source image
+  for (let dy = 0; dy < A4_H; dy++) {
+    const v = dy / (A4_H - 1);
+    const leftX  = c.tl.x + v * (c.bl.x - c.tl.x);
+    const leftY  = c.tl.y + v * (c.bl.y - c.tl.y);
+    const rightX = c.tr.x + v * (c.br.x - c.tr.x);
+    const rightY = c.tr.y + v * (c.br.y - c.tr.y);
+
+    const rowOffset = dy * A4_W * 4;
+
+    for (let dx = 0; dx < A4_W; dx++) {
+      const u = dx / (A4_W - 1);
+      const sx = Math.round(leftX + u * (rightX - leftX));
+      const sy = Math.round(leftY + u * (rightY - leftY));
+
+      if (sx >= 0 && sx < vw && sy >= 0 && sy < vh) {
+        const sIndex = (sy * vw + sx) * 4;
+        const dIndex = rowOffset + dx * 4;
+        dPixels[dIndex]     = sPixels[sIndex];
+        dPixels[dIndex + 1] = sPixels[sIndex + 1];
+        dPixels[dIndex + 2] = sPixels[sIndex + 2];
+        dPixels[dIndex + 3] = 255;
+      }
+    }
+  }
+
+  outCtx.putImageData(outData, 0, 0);
+  return outCanvas;
 }
 
 /**
@@ -1001,12 +1107,6 @@ function setupEventListeners() {
     } else {
       showToast('Modo Normal — Revisión activada');
     }
-  });
-
-  // Switch camera
-  btnSwitchCam.addEventListener('click', () => {
-    state.facingMode = state.facingMode === 'environment' ? 'user' : 'environment';
-    startCamera();
   });
 
   // Gallery
