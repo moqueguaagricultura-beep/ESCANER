@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#1a1a2e" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Escáner Pro" />
+  <meta name="description" content="Escáner de documentos A4 profesional con corrección de perspectiva" />
+  <title>Escáner PRO A4</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ===== SPLASH SCREEN ===== -->
+  <div id="splash">
+    <div class="splash-content">
+      <div class="splash-icon">📄</div>
+      <h1>Escáner PRO</h1>
+      <p>Documentos A4 perfectos</p>
+      <div class="splash-loader"><div></div></div>
+    </div>
+  </div>
+
+  <!-- ===== MAIN APP ===== -->
+  <div id="app" class="hidden">
+
+    <!-- TOP BAR -->
+    <header class="topbar">
+      <div class="topbar-left">
+        <span class="app-title">📄 Escáner PRO</span>
+      </div>
+      <div class="topbar-right">
+        <button id="btnPages" class="badge-btn" title="Páginas escaneadas">
+          <span class="icon">🗂️</span>
+          <span id="pageCount" class="badge">0</span>
+        </button>
+        <button id="btnSettings" title="Configuración">⚙️</button>
+      </div>
+    </header>
+
+    <!-- MAIN CONTENT VIEWS -->
+    <main>
+
+      <!-- ===== CAMERA VIEW ===== -->
+      <section id="cameraView" class="view active">
+        <div class="camera-wrapper">
+          <video id="video" autoplay playsinline muted></video>
+          <canvas id="overlayCanvas"></canvas>
+          <div class="camera-frame">
+            <div class="corner tl"></div>
+            <div class="corner tr"></div>
+            <div class="corner bl"></div>
+            <div class="corner br"></div>
+          </div>
+          <div id="docDetector" class="doc-overlay hidden"></div>
+          <div class="camera-hints">
+            <span id="hintText">Apunta a un documento A4</span>
+          </div>
+          <div id="flashOverlay" class="flash-overlay"></div>
+        </div>
+
+        <!-- CAMERA CONTROLS -->
+        <div class="camera-controls">
+          <div class="ctrl-row ctrl-row-top">
+            <button id="btnFlash" class="ctrl-btn secondary" title="Flash">
+              <span class="icon">⚡</span>
+              <span class="label">Flash</span>
+            </button>
+            <button id="btnAutoDetect" class="ctrl-btn secondary active" title="Detección Auto">
+              <span class="icon">🔍</span>
+              <span class="label">Auto</span>
+            </button>
+            <button id="btnSwitchCam" class="ctrl-btn secondary" title="Cambiar cámara">
+              <span class="icon">🔄</span>
+              <span class="label">Voltear</span>
+            </button>
+          </div>
+          <div class="ctrl-row ctrl-row-main">
+            <button id="btnGallery" class="ctrl-btn secondary round" title="Galería">📁</button>
+            <button id="btnCapture" class="capture-btn" title="Capturar">
+              <div class="capture-inner"></div>
+            </button>
+            <button id="btnViewPages" class="ctrl-btn secondary round" title="Ver páginas">
+              <span id="miniCount">0</span>📄
+            </button>
+          </div>
+        </div>
+
+        <!-- THUMBNAIL STRIP -->
+        <div class="thumb-strip-container">
+          <div id="thumbStrip" class="thumb-strip">
+            <div class="thumb-empty">Sin páginas aún</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== PREVIEW / EDIT VIEW ===== -->
+      <section id="previewView" class="view">
+        <div class="preview-toolbar">
+          <button id="btnBackToCamera" class="tool-btn">← Volver</button>
+          <span id="previewTitle">Editar Página</span>
+          <button id="btnConfirmPage" class="tool-btn primary">✓ Guardar</button>
+        </div>
+        <div class="preview-canvas-wrap">
+          <canvas id="previewCanvas"></canvas>
+        </div>
+        <div class="preview-tools">
+          <button class="edit-btn" id="btnRotLeft">↺ Girar izq</button>
+          <button class="edit-btn" id="btnRotRight">Girar der ↻</button>
+          <button class="edit-btn" id="btnCrop">✂ Recortar</button>
+          <button class="edit-btn" id="btnFilter">🎨 Filtro</button>
+          <button class="edit-btn" id="btnBright">☀ Brillo</button>
+          <button class="edit-btn" id="btnContrast">◑ Contraste</button>
+        </div>
+        <div id="filterPanel" class="filter-panel hidden">
+          <button class="filter-opt active" data-filter="original">Original</button>
+          <button class="filter-opt" data-filter="bw">B&N</button>
+          <button class="filter-opt" data-filter="grayscale">Gris</button>
+          <button class="filter-opt" data-filter="enhance">Mejorar</button>
+          <button class="filter-opt" data-filter="magic">Mágico</button>
+        </div>
+        <div id="sliderPanel" class="slider-panel hidden">
+          <label id="sliderLabel">Brillo</label>
+          <input type="range" id="adjSlider" min="-100" max="100" value="0" />
+          <span id="sliderVal">0</span>
+          <button class="edit-btn small" id="btnApplyAdj">Aplicar</button>
+          <button class="edit-btn small" id="btnResetAdj">Reset</button>
+        </div>
+      </section>
+
+      <!-- ===== PAGES MANAGER VIEW ===== -->
+      <section id="pagesView" class="view">
+        <div class="preview-toolbar">
+          <button id="btnBackFromPages" class="tool-btn">← Volver</button>
+          <span>Páginas (<span id="totalPagesCount">0</span>)</span>
+          <button id="btnDeleteAll" class="tool-btn danger">🗑 Borrar todo</button>
+        </div>
+        <div id="pagesGrid" class="pages-grid"></div>
+        <div class="pages-actions">
+          <div class="filename-row">
+            <label>📝 Nombre del archivo:</label>
+            <input type="text" id="fileNameInput" placeholder="Mi_Documento" maxlength="60" />
+          </div>
+          <div class="action-row">
+            <button id="btnAddMorePages" class="action-btn secondary">
+              ➕ Agregar página
+            </button>
+            <button id="btnExportPDF" class="action-btn primary">
+              📥 Exportar PDF
+            </button>
+          </div>
+          <div class="action-row">
+            <button id="btnSharePDF" class="action-btn share">
+              📤 Compartir PDF
+            </button>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- ===== PAGE EDIT MODAL ===== -->
+    <div id="pageEditModal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <span>Editar página <span id="modalPageNum">1</span></span>
+          <button id="btnCloseModal">✕</button>
+        </div>
+        <div class="modal-canvas-wrap">
+          <canvas id="modalCanvas"></canvas>
+        </div>
+        <div class="modal-tools">
+          <button class="edit-btn" id="mBtnRotL">↺ Izq</button>
+          <button class="edit-btn" id="mBtnRotR">↻ Der</button>
+          <button class="edit-btn" id="mBtnDelete" style="color:#ff4444">🗑 Eliminar</button>
+          <button class="edit-btn primary" id="mBtnSave">✓ OK</button>
+        </div>
+        <div class="modal-filters">
+          <button class="filter-opt" data-mfilter="original">Original</button>
+          <button class="filter-opt" data-mfilter="bw">B&N</button>
+          <button class="filter-opt" data-mfilter="grayscale">Gris</button>
+          <button class="filter-opt" data-mfilter="enhance">Mejorar</button>
+          <button class="filter-opt" data-mfilter="magic">Mágico</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== SETTINGS MODAL ===== -->
+    <div id="settingsModal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <span>⚙️ Configuración</span>
+          <button id="btnCloseSettings">✕</button>
+        </div>
+        <div class="settings-body">
+          <div class="setting-item">
+            <label>Calidad PDF</label>
+            <select id="pdfQuality">
+              <option value="0.6">Baja (archivos pequeños)</option>
+              <option value="0.8" selected>Media (recomendado)</option>
+              <option value="0.95">Alta (mejor calidad)</option>
+              <option value="1.0">Máxima</option>
+            </select>
+          </div>
+          <div class="setting-item">
+            <label>Detección automática</label>
+            <label class="toggle">
+              <input type="checkbox" id="autoDetectToggle" checked />
+              <span class="slider-toggle"></span>
+            </label>
+          </div>
+          <div class="setting-item">
+            <label>Corrección de perspectiva</label>
+            <label class="toggle">
+              <input type="checkbox" id="perspToggle" checked />
+              <span class="slider-toggle"></span>
+            </label>
+          </div>
+          <div class="setting-item">
+            <label>Versión de la app</label>
+            <span style="color:#888">1.0.0</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== PROGRESS / EXPORT OVERLAY ===== -->
+    <div id="exportOverlay" class="modal hidden">
+      <div class="modal-content small">
+        <div class="export-progress">
+          <div class="spinner"></div>
+          <p id="exportMsg">Generando PDF...</p>
+          <div class="progress-bar"><div id="progressFill"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- FILE INPUT hidden -->
+    <input type="file" id="galleryInput" accept="image/*" capture="environment" multiple style="display:none" />
+
+  </div><!-- /app -->
+
+  <!-- jsPDF CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="app.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('sw.js')
+          .then(r => console.log('SW registrado'))
+          .catch(e => console.log('SW error', e));
+      });
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Icon Generator</title>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="links"></div>
+<script>
+const SIZES = [72, 96, 128, 144, 152, 192, 384, 512];
+const links = document.getElementById('links');
+
+function makeIcon(size) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  const s = size;
+  const pad = s * 0.08;
+  const r = s * 0.22;
+
+  // Background
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, s, s);
+
+  // Rounded purple bg
+  ctx.beginPath();
+  const bx = pad, by = pad, bw = s - 2*pad, bh = s - 2*pad;
+  ctx.moveTo(bx + r, by);
+  ctx.arcTo(bx+bw, by, bx+bw, by+bh, r);
+  ctx.arcTo(bx+bw, by+bh, bx, by+bh, r);
+  ctx.arcTo(bx, by+bh, bx, by, r);
+  ctx.arcTo(bx, by, bx+bw, by, r);
+  ctx.closePath();
+  const grad = ctx.createLinearGradient(0,0,s,s);
+  grad.addColorStop(0, '#7c3aed');
+  grad.addColorStop(1, '#0ea5e9');
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // Document body
+  const dw = s * 0.44;
+  const dh = s * 0.58;
+  const dx = (s - dw) / 2;
+  const dy = (s - dh) / 2 - s*0.04;
+  const fold = s * 0.12;
+
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.moveTo(dx, dy + fold);
+  ctx.lineTo(dx + dw - fold, dy);
+  ctx.lineTo(dx + dw, dy + fold);
+  ctx.lineTo(dx + dw, dy + dh);
+  ctx.lineTo(dx, dy + dh);
+  ctx.closePath();
+  ctx.fill();
+
+  // Fold triangle
+  ctx.fillStyle = '#c8c8d8';
+  ctx.beginPath();
+  ctx.moveTo(dx + dw - fold, dy);
+  ctx.lineTo(dx + dw - fold, dy + fold);
+  ctx.lineTo(dx + dw, dy + fold);
+  ctx.closePath();
+  ctx.fill();
+
+  // Lines on doc
+  const lx1 = dx + s*0.07, lx2 = dx + dw - s*0.07;
+  const startY = dy + fold + s*0.07;
+  const step = s * 0.07;
+  ctx.strokeStyle = '#0ea5e9';
+  ctx.lineWidth = Math.max(1, s * 0.022);
+  for (let i = 0; i < 5; i++) {
+    const ly = startY + i * step;
+    if (ly + step < dy + dh - s*0.04) {
+      ctx.beginPath();
+      ctx.moveTo(lx1, ly); ctx.lineTo(lx2, ly);
+      ctx.stroke();
+    }
+  }
+
+  // Scan line
+  ctx.strokeStyle = '#0ea5e9';
+  ctx.lineWidth = Math.max(2, s * 0.03);
+  const scanY = dy + dh * 0.55;
+  ctx.beginPath();
+  ctx.moveTo(dx - s*0.04, scanY);
+  ctx.lineTo(dx + dw + s*0.04, scanY);
+  ctx.stroke();
+
+  return c.toDataURL('image/png');
+}
+
+// Generate all sizes and show download links
+SIZES.forEach(size => {
+  const dataURL = makeIcon(size);
+  const a = document.createElement('a');
+  a.href = dataURL;
+  a.download = `icon-${size}.png`;
+  a.textContent = `⬇ Download icon-${size}.png`;
+  a.style = 'display:block;margin:8px;font-family:monospace;font-size:14px;';
+  links.appendChild(a);
+
+  // Auto-download
+  const tmp = document.createElement('a');
+  tmp.href = dataURL;
+  tmp.download = `icon-${size}.png`;
+  document.body.appendChild(tmp);
+  tmp.click();
+  document.body.removeChild(tmp);
+});
+
+document.body.insertAdjacentHTML('afterbegin', '<h2 style="font-family:monospace;padding:10px">Icons generated! Save them to the <b>icons/</b> folder.</h2>');
+</script>
+</body>
+</html>
