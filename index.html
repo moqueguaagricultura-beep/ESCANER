@@ -75,6 +75,10 @@
               <span class="icon">🔍</span>
               <span class="label">Auto</span>
             </button>
+            <button id="btnContinuous" class="ctrl-btn secondary" title="Modo Continuo para muchas páginas">
+              <span class="icon">⚡📄</span>
+              <span class="label">Rápido</span>
+            </button>
             <button id="btnSwitchCam" class="ctrl-btn secondary" title="Cambiar cámara">
               <span class="icon">🔄</span>
               <span class="label">Voltear</span>
@@ -101,22 +105,45 @@
 
       <!-- ===== PREVIEW / EDIT VIEW ===== -->
       <section id="previewView" class="view">
+
+        <!-- TOP BAR: discard | page counter | save only -->
         <div class="preview-toolbar">
-          <button id="btnBackToCamera" class="tool-btn">← Volver</button>
-          <span id="previewTitle">Editar Página</span>
-          <button id="btnConfirmPage" class="tool-btn primary">✓ Guardar</button>
+          <button id="btnBackToCamera" class="tool-btn danger-txt">✕ Descartar</button>
+          <span class="preview-title-wrap">
+            <span id="previewTitle">Página</span>
+            <span id="previewPageNum" class="page-num-badge">1</span>
+          </span>
+          <button id="btnConfirmPage" class="tool-btn">💾 Guardar</button>
         </div>
+
+        <!-- CANVAS AREA -->
         <div class="preview-canvas-wrap">
           <canvas id="previewCanvas"></canvas>
+          <div id="correctionBadge" class="correction-badge hidden">
+            <span>✓</span> Encuadre corregido automáticamente
+          </div>
         </div>
-        <div class="preview-tools">
-          <button class="edit-btn" id="btnRotLeft">↺ Girar izq</button>
-          <button class="edit-btn" id="btnRotRight">Girar der ↻</button>
-          <button class="edit-btn" id="btnCrop">✂ Recortar</button>
-          <button class="edit-btn" id="btnFilter">🎨 Filtro</button>
-          <button class="edit-btn" id="btnBright">☀ Brillo</button>
-          <button class="edit-btn" id="btnContrast">◑ Contraste</button>
+
+        <!-- ★ SIGUIENTE PÁGINA — PRIMARY ACTION ★ -->
+        <div class="next-page-bar">
+          <div class="scan-counter-row">
+            <span id="savedSoFar">0 páginas guardadas</span>
+          </div>
+          <button id="btnNextPage" class="next-page-btn">
+            <span class="np-icon">📄➕</span>
+            <span class="np-text">SIGUIENTE PÁGINA</span>
+            <span class="np-sub">Guarda y continúa escaneando</span>
+          </button>
+          <div class="quick-actions-row">
+            <button class="edit-btn" id="btnRotLeft">↺ Rotar izq</button>
+            <button class="edit-btn" id="btnRotRight">Rotar der ↻</button>
+            <button class="edit-btn" id="btnFilter">🎨 Filtro</button>
+            <button class="edit-btn" id="btnCrop">✂ Recortar</button>
+            <button class="edit-btn" id="btnBright">☀</button>
+            <button class="edit-btn" id="btnContrast">◑</button>
+          </div>
         </div>
+
         <div id="filterPanel" class="filter-panel hidden">
           <button class="filter-opt active" data-filter="original">Original</button>
           <button class="filter-opt" data-filter="bw">B&N</button>

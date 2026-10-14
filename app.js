@@ -27,6 +27,7 @@ const state = {
   pdfQuality: 0.8,
   detectionInterval: null,
   detectedRect: null,   // {x,y,w,h} relative to video
+  continuousMode: false, // fast continuous scan mode
 };
 
 // A4 output dimensions (pixels at 150 DPI)
@@ -53,17 +54,19 @@ const previewView  = $('previewView');
 const pagesView    = $('pagesView');
 
 // Buttons
-const btnCapture   = $('btnCapture');
-const btnFlash     = $('btnFlash');
+const btnCapture    = $('btnCapture');
+const btnFlash      = $('btnFlash');
 const btnAutoDetect = $('btnAutoDetect');
-const btnSwitchCam = $('btnSwitchCam');
-const btnGallery   = $('btnGallery');
-const btnViewPages = $('btnViewPages');
-const btnPages     = $('btnPages');
-const btnSettings  = $('btnSettings');
+const btnContinuous = $('btnContinuous');    // ← NEW: Fast continuous scan
+const btnSwitchCam  = $('btnSwitchCam');
+const btnGallery    = $('btnGallery');
+const btnViewPages  = $('btnViewPages');
+const btnPages      = $('btnPages');
+const btnSettings   = $('btnSettings');
 
 const btnBackToCamera  = $('btnBackToCamera');
 const btnConfirmPage   = $('btnConfirmPage');
+const btnNextPage      = $('btnNextPage');      // ← NEW: "Siguiente Página"
 const btnRotLeft       = $('btnRotLeft');
 const btnRotRight      = $('btnRotRight');
 const btnFilter        = $('btnFilter');
@@ -116,6 +119,9 @@ const fileNameInput = $('fileNameInput');
 const galleryInput = $('galleryInput');
 const hintText     = $('hintText');
 const flashOverlay = $('flashOverlay');
+const correctionBadge = $('correctionBadge');  // ← NEW
+const savedSoFarEl    = $('savedSoFar');        // ← NEW
+const previewPageNumEl = $('previewPageNum');   // ← NEW
 
 // preview adjustments state
 let previewRotation = 0;
@@ -265,54 +271,87 @@ function detectDocument() {
 }
 
 /**
- * Simple edge/brightness based document rectangle finder.
- * Returns {x, y, w, h} in image coords or null.
+ * Enhanced document detector specifically tuned for A4 pages in folders/binders.
+ * Uses Otsu auto-thresholding + edge contrast + A4 aspect ratio verification.
  */
 function findDocumentRect(imageData, w, h) {
   const data = imageData.data;
+  const n = w * h;
 
-  // Convert to grayscale + edge map using Sobel-lite
-  const gray = new Uint8Array(w * h);
-  for (let i = 0; i < w * h; i++) {
-    gray[i] = (data[i*4] * 0.299 + data[i*4+1] * 0.587 + data[i*4+2] * 0.114);
+  // Grayscale conversion
+  const gray = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    gray[i] = (data[i*4] * 0.299 + data[i*4+1] * 0.587 + data[i*4+2] * 0.114) | 0;
   }
 
-  // Simple row/col variance to detect content boundaries
-  const rowBright = new Float32Array(h);
-  const colBright = new Float32Array(w);
-  for (let y = 0; y < h; y++) {
-    let sum = 0;
-    for (let x = 0; x < w; x++) sum += gray[y * w + x];
-    rowBright[y] = sum / w;
+  // 1. Otsu threshold to separate page from folder background
+  const hist = new Int32Array(256);
+  for (let i = 0; i < n; i++) hist[gray[i]]++;
+
+  let sum = 0;
+  for (let i = 0; i < 256; i++) sum += i * hist[i];
+
+  let sumB = 0, wB = 0, wF = 0, varMax = 0, threshold = 128;
+  for (let t = 0; t < 256; t++) {
+    wB += hist[t];
+    if (wB === 0) continue;
+    wF = n - wB;
+    if (wF === 0) break;
+    sumB += t * hist[t];
+    const mB = sumB / wB;
+    const mF = (sum - sumB) / wF;
+    const varBetween = wB * wF * (mB - mF) * (mB - mF);
+    if (varBetween > varMax) {
+      varMax = varBetween;
+      threshold = t;
+    }
   }
+
+  // 2. Scan lines to find bounds of the bright (document) region
+  // Horizontal bounds (left/right)
+  const colCounts = new Int32Array(w);
   for (let x = 0; x < w; x++) {
-    let sum = 0;
-    for (let y = 0; y < h; y++) sum += gray[y * w + x];
-    colBright[x] = sum / h;
+    for (let y = 0; y < h; y++) {
+      if (gray[y * w + x] > threshold) colCounts[x]++;
+    }
   }
 
-  const globalAvg = rowBright.reduce((a,b) => a+b, 0) / h;
-
-  // Find bright band (document is typically brighter than background)
-  const threshold = Math.min(globalAvg + 15, 200);
-
-  let top = -1, bot = -1, left = -1, right = -1;
+  // Vertical bounds (top/bottom)
+  const rowCounts = new Int32Array(h);
   for (let y = 0; y < h; y++) {
-    if (rowBright[y] > threshold) { if (top < 0) top = y; bot = y; }
-  }
-  for (let x = 0; x < w; x++) {
-    if (colBright[x] > threshold) { if (left < 0) left = x; right = x; }
+    for (let x = 0; x < w; x++) {
+      if (gray[y * w + x] > threshold) rowCounts[y]++;
+    }
   }
 
-  if (top < 0 || left < 0) return null;
+  // Need at least 25% of column to be considered document
+  const minCol = Math.round(h * 0.25);
+  const minRow = Math.round(w * 0.25);
+
+  let left = 0, right = w - 1, top = 0, bot = h - 1;
+
+  for (let x = 0; x < w; x++) {
+    if (colCounts[x] > minCol) { left = x; break; }
+  }
+  for (let x = w - 1; x >= 0; x--) {
+    if (colCounts[x] > minCol) { right = x; break; }
+  }
+  for (let y = 0; y < h; y++) {
+    if (rowCounts[y] > minRow) { top = y; break; }
+  }
+  for (let y = h - 1; y >= 0; y--) {
+    if (rowCounts[y] > minRow) { bot = y; break; }
+  }
 
   const rectW = right - left;
   const rectH = bot - top;
 
-  // Must cover at least 30% of the frame and have A4-ish ratio
-  if (rectW < w * 0.3 || rectH < h * 0.3) return null;
+  // Validation: document must occupy at least 35% of frame
+  if (rectW < w * 0.35 || rectH < h * 0.35) return null;
+
+  // Check aspect ratio (A4 portrait = 1.414; landscape = 0.707; accept 0.65 - 2.1)
   const ratio = rectH / rectW;
-  if (ratio < 0.9 || ratio > 2.2) return null; // A4 = 1.414
+  if (ratio < 0.65 || ratio > 2.2) return null;
 
   return { x: left, y: top, w: rectW, h: rectH };
 }
@@ -341,22 +380,49 @@ async function captureFrame() {
   capCtx.drawImage(video, 0, 0, vw, vh);
 
   let processedCanvas;
+  let wasAutoCorrected = false;
+
   if (state.perspCorrect && state.detectedRect) {
     processedCanvas = cropAndCorrect(capCanvas, state.detectedRect, vw, vh);
+    wasAutoCorrected = true;
   } else {
-    processedCanvas = capCanvas;
+    // Even without detected rect, try an aggressive auto-crop
+    processedCanvas = autoCropWhiteBorders(capCanvas);
+    wasAutoCorrected = processedCanvas !== capCanvas;
   }
 
   // Resize to A4
   const a4Canvas = resizeToA4(processedCanvas);
   state.currentCaptured = a4Canvas;
-  previewRotation = 0;
-  previewFilter   = 'original';
+  previewRotation   = 0;
+  previewFilter     = 'original';
   previewBrightness = 0;
   previewContrast   = 0;
 
+  // Update preview page number (will be page N+1)
+  if (previewPageNumEl) previewPageNumEl.textContent = state.pages.length + 1;
+
+  // Update saved counter
+  updateSavedCounter();
+
+  // In CONTINUOUS MODE: auto-save and stay in camera view (lightning fast for 100+ pages)
+  if (state.continuousMode) {
+    saveCurrentPage();
+    state.currentCaptured = null;
+    updateUI();
+    showToast(`✓ Página ${state.pages.length} escaneada`);
+    return; // Stay in camera!
+  }
+
   showView('previewView');
   renderPreview();
+
+  // Show correction badge
+  if (wasAutoCorrected && correctionBadge) {
+    correctionBadge.classList.remove('hidden');
+    // Remove after animation completes (3s)
+    setTimeout(() => correctionBadge.classList.add('hidden'), 3200);
+  }
 }
 
 /**
@@ -368,11 +434,83 @@ function cropAndCorrect(srcCanvas, rect, vw, vh) {
   const w = Math.round(rect.w * vw);
   const h = Math.round(rect.h * vh);
 
+  // Add a small padding so we don't cut edges
+  const padX = Math.round(w * 0.01);
+  const padY = Math.round(h * 0.01);
+  const cx = Math.max(0, x - padX);
+  const cy = Math.max(0, y - padY);
+  const cw = Math.min(vw - cx, w + padX * 2);
+  const ch = Math.min(vh - cy, h + padY * 2);
+
   const out = document.createElement('canvas');
-  out.width = w; out.height = h;
+  out.width = cw; out.height = ch;
   const ctx = out.getContext('2d');
-  ctx.drawImage(srcCanvas, x, y, w, h, 0, 0, w, h);
+  ctx.drawImage(srcCanvas, cx, cy, cw, ch, 0, 0, cw, ch);
   return out;
+}
+
+/**
+ * Fallback: remove dark/black borders from scanned image.
+ * Finds the bounding box of bright (non-dark) content.
+ */
+function autoCropWhiteBorders(srcCanvas) {
+  const w = srcCanvas.width;
+  const h = srcCanvas.height;
+  const tmpW = 320, tmpH = Math.round(h / w * 320);
+  const tmp = document.createElement('canvas');
+  tmp.width = tmpW; tmp.height = tmpH;
+  const tCtx = tmp.getContext('2d');
+  tCtx.drawImage(srcCanvas, 0, 0, tmpW, tmpH);
+  const d = tCtx.getImageData(0, 0, tmpW, tmpH).data;
+
+  const THRESHOLD = 40; // below this = dark border
+  let top = 0, bot = tmpH - 1, left = 0, right = tmpW - 1;
+
+  // Find top
+  outer: for (let y = 0; y < tmpH; y++) {
+    for (let x = 0; x < tmpW; x++) {
+      const i = (y * tmpW + x) * 4;
+      if (d[i] > THRESHOLD || d[i+1] > THRESHOLD || d[i+2] > THRESHOLD) { top = y; break outer; }
+    }
+  }
+  // Find bottom
+  outer: for (let y = tmpH - 1; y >= 0; y--) {
+    for (let x = 0; x < tmpW; x++) {
+      const i = (y * tmpW + x) * 4;
+      if (d[i] > THRESHOLD || d[i+1] > THRESHOLD || d[i+2] > THRESHOLD) { bot = y; break outer; }
+    }
+  }
+  // Find left
+  outer: for (let x = 0; x < tmpW; x++) {
+    for (let y = 0; y < tmpH; y++) {
+      const i = (y * tmpW + x) * 4;
+      if (d[i] > THRESHOLD || d[i+1] > THRESHOLD || d[i+2] > THRESHOLD) { left = x; break outer; }
+    }
+  }
+  // Find right
+  outer: for (let x = tmpW - 1; x >= 0; x--) {
+    for (let y = 0; y < tmpH; y++) {
+      const i = (y * tmpW + x) * 4;
+      if (d[i] > THRESHOLD || d[i+1] > THRESHOLD || d[i+2] > THRESHOLD) { right = x; break outer; }
+    }
+  }
+
+  const cropW = right - left;
+  const cropH = bot - top;
+  // Only crop if we found meaningful borders (>3% inset)
+  if (cropW < tmpW * 0.94 && cropH < tmpH * 0.94 && cropW > 0 && cropH > 0) {
+    const scaleX = w / tmpW;
+    const scaleY = h / tmpH;
+    const rx = Math.round(left * scaleX);
+    const ry = Math.round(top  * scaleY);
+    const rw = Math.round(cropW * scaleX);
+    const rh = Math.round(cropH * scaleY);
+    const out = document.createElement('canvas');
+    out.width = rw; out.height = rh;
+    out.getContext('2d').drawImage(srcCanvas, rx, ry, rw, rh, 0, 0, rw, rh);
+    return out;
+  }
+  return srcCanvas; // no borders found → return original
 }
 
 function resizeToA4(srcCanvas) {
@@ -383,7 +521,7 @@ function resizeToA4(srcCanvas) {
   ctx.fillStyle = '#fff';
   ctx.fillRect(0, 0, A4_W, A4_H);
 
-  // Fit image centered
+  // Fit image covering the full A4 (cover mode, centered)
   const sw = srcCanvas.width;
   const sh = srcCanvas.height;
   const scale = Math.min(A4_W / sw, A4_H / sh);
@@ -394,6 +532,7 @@ function resizeToA4(srcCanvas) {
   ctx.drawImage(srcCanvas, dx, dy, dw, dh);
   return a4;
 }
+
 
 // ─────────────────────────────────────────
 //  IMAGE PROCESSING
@@ -486,20 +625,86 @@ function renderPreview() {
 // ─────────────────────────────────────────
 //  PAGE MANAGEMENT
 // ─────────────────────────────────────────
+/**
+ * Save current page and go back to pages view (classic save)
+ */
 function confirmPage() {
   if (!state.currentCaptured) return;
+  saveCurrentPage();
+  state.currentCaptured = null;
+  updateUI();
+  showView('cameraView');
+}
+
+/**
+ * ★ SIGUIENTE PÁGINA ★
+ * Save current page and immediately return to camera for next scan.
+ * This is the PRIMARY action for high-volume scanning.
+ */
+function nextPage() {
+  if (!state.currentCaptured) return;
+
+  // Visual feedback on the button
+  btnNextPage.classList.add('tapped');
+  setTimeout(() => btnNextPage.classList.remove('tapped'), 260);
+
+  saveCurrentPage();
+  state.currentCaptured = null;
+  updateUI();
+
+  // Go straight back to camera — ready for next shot
+  showView('cameraView');
+
+  // Brief success toast on camera view
+  showToast(`✓ Página ${state.pages.length} guardada`);
+}
+
+/**
+ * Shared save logic: processes current canvas and pushes to pages array.
+ */
+function saveCurrentPage() {
   const rotated  = rotateCanvas(state.currentCaptured, previewRotation);
   const filtered = applyFilter(rotated, previewFilter, previewBrightness, previewContrast);
   const finalA4  = resizeToA4(filtered);
-
   state.pages.push({
     canvas: finalA4,
     dataURL: finalA4.toDataURL('image/jpeg', 0.92),
   });
+}
 
-  state.currentCaptured = null;
-  updateUI();
-  showView('cameraView');
+/**
+ * Update the "X páginas guardadas" counter in the preview bar
+ */
+function updateSavedCounter() {
+  if (savedSoFarEl) {
+    const n = state.pages.length;
+    savedSoFarEl.textContent = n === 0
+      ? 'Primera página'
+      : `${n} página${n > 1 ? 's' : ''} ya guardada${n > 1 ? 's' : ''}`;
+  }
+}
+
+/**
+ * Show a brief floating toast message on the camera view
+ */
+function showToast(msg) {
+  let toast = document.getElementById('toastMsg');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'toastMsg';
+    toast.style.cssText = `
+      position:fixed; bottom:100px; left:50%; transform:translateX(-50%);
+      background:rgba(34,197,94,0.95); color:#fff;
+      padding:8px 20px; border-radius:20px; font-size:0.88rem;
+      font-weight:600; z-index:999; pointer-events:none;
+      white-space:nowrap; transition:opacity 0.4s;
+    `;
+    document.body.appendChild(toast);
+  }
+  toast.textContent = msg;
+  toast.style.opacity = '1';
+  clearTimeout(toast._timer);
+  toast._timer = setTimeout(() => { toast.style.opacity = '0'; }, 1800);
 }
 
 function deletePage(idx) {
@@ -787,6 +992,17 @@ function setupEventListeners() {
     if (!state.autoDetect) clearOverlay();
   });
 
+  // Continuous / Fast scan mode toggle
+  btnContinuous.addEventListener('click', () => {
+    state.continuousMode = !state.continuousMode;
+    btnContinuous.classList.toggle('active', state.continuousMode);
+    if (state.continuousMode) {
+      showToast('⚡ Modo Rápido ACTIVADO — Dispara sin parar');
+    } else {
+      showToast('Modo Normal — Revisión activada');
+    }
+  });
+
   // Switch camera
   btnSwitchCam.addEventListener('click', () => {
     state.facingMode = state.facingMode === 'environment' ? 'user' : 'environment';
@@ -820,6 +1036,7 @@ function setupEventListeners() {
     showView('cameraView');
   });
   btnConfirmPage.addEventListener('click', confirmPage);
+  btnNextPage.addEventListener('click', nextPage); // ★ SIGUIENTE PÁGINA ★
 
   btnRotLeft.addEventListener('click', () => {
     previewRotation = (previewRotation - 90 + 360) % 360;
