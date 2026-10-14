@@ -56,7 +56,6 @@ const pagesView    = $('pagesView');
 
 // Buttons
 const btnCapture    = $('btnCapture');
-const btnFlash      = $('btnFlash');
 const btnAutoDetect = $('btnAutoDetect');
 const btnContinuous = $('btnContinuous');    // ← Fast continuous scan
 const btnGallery    = $('btnGallery');
@@ -1208,23 +1207,6 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function setupEventListeners() {
   // Capture
   btnCapture.addEventListener('click', captureFrame);
-
-  // Flash
-  btnFlash.addEventListener('click', async () => {
-    state.flashEnabled = !state.flashEnabled;
-    btnFlash.classList.toggle('active', state.flashEnabled);
-    if (state.stream) {
-      const track = state.stream.getVideoTracks()[0];
-      if (track && track.applyConstraints) {
-        try {
-          await track.applyConstraints({ advanced: [{ torch: state.flashEnabled }] });
-        } catch(e) {
-          // torch not supported
-          btnFlash.style.opacity = '0.5';
-        }
-      }
-    }
-  });
 
   // Auto detect toggle
   btnAutoDetect.addEventListener('click', () => {
