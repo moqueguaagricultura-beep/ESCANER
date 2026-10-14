@@ -303,28 +303,28 @@ function detectDocument() {
 }
 
 /**
- * Robust 4-corner detector for vertical A4 sheets.
- * Evaluates edge contours and searches for the optimal 4 vertices
- * matching the 1:1.414 vertical aspect ratio.
+ * Precise 4-corner detector for vertical A4 document.
+ * Analyzes contrast edges and finds the 4 extreme quad vertices of the paper.
  */
 function findA4Corners(imageData, w, h) {
   const data = imageData.data;
   const n = w * h;
 
-  // Grayscale
+  // 1. Grayscale luminance
   const gray = new Uint8Array(n);
   for (let i = 0; i < n; i++) {
-    gray[i] = (data[i * 4] * 0.299 + data[i * 4 + 1] * 0.587 + data[i * 4 + 2] * 0.114) | 0;
+    const idx = i * 4;
+    gray[i] = (data[idx] * 0.299 + data[idx + 1] * 0.587 + data[idx + 2] * 0.114) | 0;
   }
 
-  // Otsu automatic thresholding
+  // 2. Otsu thresholding
   const hist = new Int32Array(256);
   for (let i = 0; i < n; i++) hist[gray[i]]++;
 
-  let sum = 0;
-  for (let i = 0; i < 256; i++) sum += i * hist[i];
+  let sumAll = 0;
+  for (let i = 0; i < 256; i++) sumAll += i * hist[i];
 
-  let sumB = 0, wB = 0, varMax = 0, threshold = 120;
+  let sumB = 0, wB = 0, varMax = 0, threshold = 125;
   for (let t = 0; t < 256; t++) {
     wB += hist[t];
     if (wB === 0) continue;
@@ -332,105 +332,71 @@ function findA4Corners(imageData, w, h) {
     if (wF === 0) break;
     sumB += t * hist[t];
     const mB = sumB / wB;
-    const mF = (sum - sumB) / wF;
-    const varBetween = wB * wF * (mB - mF) * (mB - mF);
-    if (varBetween > varMax) {
-      varMax = varBetween;
+    const mF = (sumAll - sumB) / wF;
+    const vBetween = wB * wF * (mB - mF) * (mB - mF);
+    if (vBetween > varMax) {
+      varMax = vBetween;
       threshold = t;
     }
   }
 
-  // Binary mask of bright paper
-  const binary = new Uint8Array(n);
-  for (let i = 0; i < n; i++) {
-    binary[i] = gray[i] >= threshold ? 1 : 0;
-  }
+  // Ensure reasonable threshold
+  threshold = Math.max(70, Math.min(210, threshold));
 
-  // Scan row/col density to find initial bounding box
-  const colSum = new Int32Array(w);
-  const rowSum = new Int32Array(h);
-  for (let y = 0; y < h; y++) {
-    const rowIdx = y * w;
-    for (let x = 0; x < w; x++) {
-      if (binary[rowIdx + x]) {
-        colSum[x]++;
-        rowSum[y]++;
-      }
-    }
-  }
-
-  const minC = Math.round(h * 0.20);
-  const minR = Math.round(w * 0.20);
-
-  let minX = 0, maxX = w - 1, minY = 0, maxY = h - 1;
-  for (let x = 0; x < w; x++) { if (colSum[x] > minC) { minX = x; break; } }
-  for (let x = w - 1; x >= 0; x--) { if (colSum[x] > minC) { maxX = x; break; } }
-  for (let y = 0; y < h; y++) { if (rowSum[y] > minR) { minY = y; break; } }
-  for (let y = h - 1; y >= 0; y--) { if (rowSum[y] > minR) { maxY = y; break; } }
-
-  const boxW = maxX - minX;
-  const boxH = maxY - minY;
-
-  // Must cover at least 32% of screen width & 38% height
-  if (boxW < w * 0.32 || boxH < h * 0.38) return null;
-
-  // Verify vertical orientation (height should be larger than width: A4 portrait)
-  const ratio = boxH / boxW;
-  if (ratio < 1.05 || ratio > 1.95) return null;
-
-  // Find the exact 4 corners by finding paper points closest to bounding box corners
-  // Corner 1: Top-Left (minimizes x + y)
-  // Corner 2: Top-Right (maximizes x - y)
-  // Corner 3: Bottom-Right (maximizes x + y)
-  // Corner 4: Bottom-Left (minimizes x - y)
-  let tl = { x: minX, y: minY }, bestTL = 1e9;
-  let tr = { x: maxX, y: minY }, bestTR = -1e9;
-  let br = { x: maxX, y: maxY }, bestBR = -1e9;
-  let bl = { x: minX, y: maxY }, bestBL = 1e9;
-
-  const bandH = Math.round(boxH * 0.28);
-  const bandW = Math.round(boxW * 0.28);
-
-  // Scan top band for TL and TR
-  for (let y = minY; y <= minY + bandH; y++) {
+  // 3. Collect all paper candidate pixels (bright region)
+  const pts = [];
+  const step = 2; // step for performance and noise reduction
+  for (let y = 4; y < h - 4; y += step) {
     const rIdx = y * w;
-    for (let x = minX; x <= maxX; x++) {
-      if (binary[rIdx + x]) {
-        // TL candidate (left side)
-        if (x <= minX + bandW) {
-          const score = (x - minX) * 1.2 + (y - minY) * 1.0;
-          if (score < bestTL) { bestTL = score; tl = { x, y }; }
-        }
-        // TR candidate (right side)
-        if (x >= maxX - bandW) {
-          const score = (maxX - x) * 1.2 + (y - minY) * 1.0;
-          if (score < bestTR || bestTR === -1e9) {
-            // we want to minimize distance to (maxX, minY)
-            const dist = (maxX - x) * 1.2 + (y - minY) * 1.0;
-            if (bestTR === -1e9 || dist < bestTR) { bestTR = dist; tr = { x, y }; }
-          }
-        }
+    for (let x = 4; x < w - 4; x += step) {
+      if (gray[rIdx + x] >= threshold) {
+        pts.push({ x, y });
       }
     }
   }
 
-  // Scan bottom band for BL and BR
-  for (let y = maxY; y >= maxY - bandH; y--) {
-    const rIdx = y * w;
-    for (let x = minX; x <= maxX; x++) {
-      if (binary[rIdx + x]) {
-        // BL candidate (left side)
-        if (x <= minX + bandW) {
-          const dist = (x - minX) * 1.2 + (maxY - y) * 1.0;
-          if (bestBL === 1e9 || dist < bestBL) { bestBL = dist; bl = { x, y }; }
-        }
-        // BR candidate (right side)
-        if (x >= maxX - bandW) {
-          const dist = (maxX - x) * 1.2 + (maxY - y) * 1.0;
-          if (bestBR === -1e9 || dist < bestBR) { bestBR = dist; br = { x, y }; }
-        }
-      }
-    }
+  if (pts.length < (n / (step * step)) * 0.12) {
+    return null; // Not enough paper detected
+  }
+
+  // 4. Find the 4 extreme vertices:
+  // TL: minimizes (x + y * 1.1)
+  // TR: maximizes (x - y * 1.1)
+  // BR: maximizes (x + y * 1.1)
+  // BL: minimizes (x - y * 1.1)
+  let tl = pts[0], tr = pts[0], br = pts[0], bl = pts[0];
+  let minSum = Infinity, maxSum = -Infinity;
+  let minDiff = Infinity, maxDiff = -Infinity;
+
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    const s = p.x + p.y * 1.15;
+    const d = p.x - p.y * 1.15;
+
+    if (s < minSum) { minSum = s; tl = p; }
+    if (s > maxSum) { maxSum = s; br = p; }
+    if (d < minDiff) { minDiff = d; bl = p; }
+    if (d > maxDiff) { maxDiff = d; tr = p; }
+  }
+
+  // Check dimensions of the detected quad
+  const topW = Math.hypot(tr.x - tl.x, tr.y - tl.y);
+  const botW = Math.hypot(br.x - bl.x, br.y - bl.y);
+  const leftH = Math.hypot(bl.x - tl.x, bl.y - tl.y);
+  const rightH = Math.hypot(br.x - tr.x, br.y - tr.y);
+
+  const avgW = (topW + botW) / 2;
+  const avgH = (leftH + rightH) / 2;
+
+  // Minimum size: paper must occupy at least 25% width & 30% height
+  if (avgW < w * 0.25 || avgH < h * 0.30) {
+    return null;
+  }
+
+  // Aspect ratio check: must be predominantly vertical (height > width)
+  const ratio = avgH / avgW;
+  if (ratio < 0.95 || ratio > 2.3) {
+    return null;
   }
 
   return { tl, tr, br, bl };
@@ -450,7 +416,6 @@ async function captureFrame() {
     btnCapture.classList.remove('capturing');
   }, 300);
 
-  // Capture full resolution frame
   const vw = video.videoWidth;
   const vh = video.videoHeight;
   const capCanvas = document.createElement('canvas');
@@ -462,16 +427,38 @@ async function captureFrame() {
   let processedCanvas;
   let wasAutoCorrected = false;
 
-  if (state.perspCorrect && state.detectedCorners) {
-    // 4-corner perspective unwarping directly into A4 vertical canvas
-    processedCanvas = unwarp4CornersToA4(capCanvas, state.detectedCorners, vw, vh);
+  // Use currently detected corners or perform an instant high-res search on the captured frame
+  let corners = state.detectedCorners;
+  if (!corners) {
+    // If corners were not locked yet, analyze the captured high-res frame
+    const testW = 320, testH = Math.round(vh / vw * 320);
+    const tmp = document.createElement('canvas');
+    tmp.width = testW; tmp.height = testH;
+    const tCtx = tmp.getContext('2d');
+    tCtx.drawImage(capCanvas, 0, 0, testW, testH);
+    const raw = findA4Corners(tCtx.getImageData(0, 0, testW, testH), testW, testH);
+    if (raw) {
+      corners = {
+        tl: { x: raw.tl.x / testW, y: raw.tl.y / testH },
+        tr: { x: raw.tr.x / testW, y: raw.tr.y / testH },
+        br: { x: raw.br.x / testW, y: raw.br.y / testH },
+        bl: { x: raw.bl.x / testW, y: raw.bl.y / testH }
+      };
+    }
+  }
+
+  if (state.perspCorrect && corners) {
+    // Exact projective homography: extracts ONLY the A4 paper surface, flattening perspective
+    processedCanvas = unwarp4CornersToA4(capCanvas, corners, vw, vh);
     wasAutoCorrected = true;
   } else {
-    // Fallback automatic border cleanup and fit to A4
-    const cropped = autoCropWhiteBorders(capCanvas);
-    processedCanvas = resizeToA4(cropped);
-    wasAutoCorrected = cropped !== capCanvas;
+    // Fallback: crop according to vertical guide frame
+    processedCanvas = cropToA4Guide(capCanvas);
+    wasAutoCorrected = true;
   }
+
+  // Apply automatic enhancement (flatten shadows, whiten background, sharpen text)
+  processedCanvas = enhanceScannedDocument(processedCanvas);
 
   state.currentCaptured = processedCanvas;
   previewRotation   = 0;
@@ -482,7 +469,7 @@ async function captureFrame() {
   if (previewPageNumEl) previewPageNumEl.textContent = state.pages.length + 1;
   updateSavedCounter();
 
-  // In CONTINUOUS MODE: auto-save and stay in camera view (lightning fast)
+  // In CONTINUOUS MODE: auto-save and stay in camera view
   if (state.continuousMode) {
     saveCurrentPage();
     state.currentCaptured = null;
@@ -501,8 +488,90 @@ async function captureFrame() {
 }
 
 /**
- * Rectifies the 4 corners of the document into a perfect vertical A4 canvas (A4_W x A4_H).
- * Uses bilinear backward mapping interpolation.
+ * Fallback: crops the center A4 vertical rectangle matching the screen guide
+ */
+function cropToA4Guide(srcCanvas) {
+  const sw = srcCanvas.width;
+  const sh = srcCanvas.height;
+
+  // A4 ratio = 1 / 1.414 = 0.707
+  let targetW = sw * 0.76;
+  let targetH = targetW * 1.414;
+
+  if (targetH > sh * 0.88) {
+    targetH = sh * 0.88;
+    targetW = targetH / 1.414;
+  }
+
+  const sx = Math.max(0, Math.round((sw - targetW) / 2));
+  const sy = Math.max(0, Math.round((sh - targetH) / 2));
+  const cw = Math.min(sw - sx, Math.round(targetW));
+  const ch = Math.min(sh - sy, Math.round(targetH));
+
+  const out = document.createElement('canvas');
+  out.width = A4_W;
+  out.height = A4_H;
+  const ctx = out.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, A4_W, A4_H);
+  ctx.drawImage(srcCanvas, sx, sy, cw, ch, 0, 0, A4_W, A4_H);
+  return out;
+}
+
+/**
+ * Calculates Projective Homography Matrix (3x3) mapping unit square [0,1]^2 to arbitrary quad.
+ */
+function getSquareToQuadTransform(x0, y0, x1, y1, x2, y2, x3, y3) {
+  const dx1 = x1 - x2, dy1 = y1 - y2;
+  const dx2 = x3 - x2, dy2 = y3 - y2;
+  const sx = x0 - x1 + x2 - x3;
+  const sy = y0 - y1 + y2 - y3;
+
+  const g = (sx * dy2 - sy * dx2) / (dx1 * dy2 - dy1 * dx2);
+  const h = (dx1 * sy - dy1 * sx) / (dx1 * dy2 - dy1 * dx2);
+
+  const a = x1 - x0 + g * x1;
+  const b = x3 - x0 + h * x3;
+  const c = x0;
+  const d = y1 - y0 + g * y1;
+  const e = y3 - y0 + h * y3;
+  const f = y0;
+
+  return [a, b, c, d, e, f, g, h, 1];
+}
+
+/**
+ * Inverts a 3x3 matrix.
+ */
+function invertMatrix3x3(m) {
+  const a = m[0], b = m[1], c = m[2];
+  const d = m[3], e = m[4], f = m[5];
+  const g = m[6], h = m[7], k = m[8];
+
+  const A =  (e * k - f * h);
+  const B = -(d * k - f * g);
+  const C =  (d * h - e * g);
+  const det = a * A + b * B + c * C;
+
+  if (Math.abs(det) < 1e-12) return null;
+  const invDet = 1.0 / det;
+
+  return [
+     A * invDet,
+    -(b * k - c * h) * invDet,
+     (b * f - c * e) * invDet,
+     B * invDet,
+     (a * k - c * g) * invDet,
+    -(a * f - c * d) * invDet,
+     C * invDet,
+    -(a * h - b * g) * invDet,
+     (a * e - b * d) * invDet
+  ];
+}
+
+/**
+ * Precise 4-corner perspective unwarping into vertical A4 sheet (A4_W x A4_H).
+ * Extracts ONLY the content within the 4 corners, flattening perspective completely.
  */
 function unwarp4CornersToA4(srcCanvas, cornersNorm, vw, vh) {
   const outCanvas = document.createElement('canvas');
@@ -510,13 +579,21 @@ function unwarp4CornersToA4(srcCanvas, cornersNorm, vw, vh) {
   outCanvas.height = A4_H;
   const outCtx = outCanvas.getContext('2d');
 
-  // Corner coordinates in source canvas pixels
+  // Source quad coordinates (with safe clamping)
   const c = {
-    tl: { x: cornersNorm.tl.x * vw, y: cornersNorm.tl.y * vh },
-    tr: { x: cornersNorm.tr.x * vw, y: cornersNorm.tr.y * vh },
-    br: { x: cornersNorm.br.x * vw, y: cornersNorm.br.y * vh },
-    bl: { x: cornersNorm.bl.x * vw, y: cornersNorm.bl.y * vh }
+    tl: { x: Math.max(0, Math.min(vw - 1, cornersNorm.tl.x * vw)), y: Math.max(0, Math.min(vh - 1, cornersNorm.tl.y * vh)) },
+    tr: { x: Math.max(0, Math.min(vw - 1, cornersNorm.tr.x * vw)), y: Math.max(0, Math.min(vh - 1, cornersNorm.tr.y * vh)) },
+    br: { x: Math.max(0, Math.min(vw - 1, cornersNorm.br.x * vw)), y: Math.max(0, Math.min(vh - 1, cornersNorm.br.y * vh)) },
+    bl: { x: Math.max(0, Math.min(vw - 1, cornersNorm.bl.x * vw)), y: Math.max(0, Math.min(vh - 1, cornersNorm.bl.y * vh)) }
   };
+
+  // Matrix: [0, 1]x[0, 1] -> source quad
+  const H = getSquareToQuadTransform(
+    c.tl.x, c.tl.y,
+    c.tr.x, c.tr.y,
+    c.br.x, c.br.y,
+    c.bl.x, c.bl.y
+  );
 
   const srcCtx = srcCanvas.getContext('2d');
   const srcData = srcCtx.getImageData(0, 0, vw, vh);
@@ -525,27 +602,45 @@ function unwarp4CornersToA4(srcCanvas, cornersNorm, vw, vh) {
   const sPixels = srcData.data;
   const dPixels = outData.data;
 
-  // Bilinear transform mapping each pixel in output A4 to source image
-  for (let dy = 0; dy < A4_H; dy++) {
-    const v = dy / (A4_H - 1);
-    const leftX  = c.tl.x + v * (c.bl.x - c.tl.x);
-    const leftY  = c.tl.y + v * (c.bl.y - c.tl.y);
-    const rightX = c.tr.x + v * (c.br.x - c.tr.x);
-    const rightY = c.tr.y + v * (c.br.y - c.tr.y);
+  const a = H[0], b = H[1], c0 = H[2];
+  const d = H[3], e = H[4], f0 = H[5];
+  const g = H[6], h = H[7];
 
+  const invW = 1.0 / (A4_W - 1);
+  const invH = 1.0 / (A4_H - 1);
+
+  // Backward mapping interpolation
+  for (let dy = 0; dy < A4_H; dy++) {
+    const v = dy * invH;
     const rowOffset = dy * A4_W * 4;
 
-    for (let dx = 0; dx < A4_W; dx++) {
-      const u = dx / (A4_W - 1);
-      const sx = Math.round(leftX + u * (rightX - leftX));
-      const sy = Math.round(leftY + u * (rightY - leftY));
+    const bv = b * v + c0;
+    const ev = e * v + f0;
+    const hv = h * v + 1;
 
-      if (sx >= 0 && sx < vw && sy >= 0 && sy < vh) {
-        const sIndex = (sy * vw + sx) * 4;
-        const dIndex = rowOffset + dx * 4;
+    for (let dx = 0; dx < A4_W; dx++) {
+      const u = dx * invW;
+      const wDenom = g * u + hv;
+      const invDenom = 1.0 / wDenom;
+
+      const sx = (a * u + bv) * invDenom;
+      const sy = (d * u + ev) * invDenom;
+
+      const isx = Math.round(sx);
+      const isy = Math.round(sy);
+
+      const dIndex = rowOffset + (dx << 2);
+
+      if (isx >= 0 && isx < vw && isy >= 0 && isy < vh) {
+        const sIndex = (isy * vw + isx) << 2;
         dPixels[dIndex]     = sPixels[sIndex];
         dPixels[dIndex + 1] = sPixels[sIndex + 1];
         dPixels[dIndex + 2] = sPixels[sIndex + 2];
+        dPixels[dIndex + 3] = 255;
+      } else {
+        dPixels[dIndex]     = 255;
+        dPixels[dIndex + 1] = 255;
+        dPixels[dIndex + 2] = 255;
         dPixels[dIndex + 3] = 255;
       }
     }
@@ -553,6 +648,47 @@ function unwarp4CornersToA4(srcCanvas, cornersNorm, vw, vh) {
 
   outCtx.putImageData(outData, 0, 0);
   return outCanvas;
+}
+
+/**
+ * Flattens lighting, improves text contrast and cleans shadows for professional flat A4 scan.
+ */
+function enhanceScannedDocument(srcCanvas) {
+  const w = srcCanvas.width;
+  const h = srcCanvas.height;
+  const out = document.createElement('canvas');
+  out.width = w;
+  out.height = h;
+  const ctx = out.getContext('2d');
+
+  // Draw original image
+  ctx.drawImage(srcCanvas, 0, 0);
+  const imgData = ctx.getImageData(0, 0, w, h);
+  const d = imgData.data;
+  const n = d.length;
+
+  // Adaptive stretch to eliminate shadows and whiten page background
+  for (let i = 0; i < n; i += 4) {
+    let r = d[i], g = d[i + 1], b = d[i + 2];
+    const lum = (r * 0.299 + g * 0.587 + b * 0.114);
+
+    // If pixel is paper background (bright), push towards pure white
+    if (lum > 140) {
+      const boost = 1.0 + (lum - 140) / 115 * 0.35;
+      d[i]     = Math.min(255, (r * boost) | 0);
+      d[i + 1] = Math.min(255, (g * boost) | 0);
+      d[i + 2] = Math.min(255, (b * boost) | 0);
+    } else {
+      // Text and dark strokes: deepen contrast
+      const cut = 0.88;
+      d[i]     = (r * cut) | 0;
+      d[i + 1] = (g * cut) | 0;
+      d[i + 2] = (b * cut) | 0;
+    }
+  }
+
+  ctx.putImageData(imgData, 0, 0);
+  return out;
 }
 
 /**

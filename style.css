@@ -95,10 +95,13 @@ main { flex: 1; position: relative; overflow: hidden; }
 }
 #video {
   width: 100%; height: 100%;
-  object-fit: cover;
+  object-fit: contain;
+  position: absolute;
+  top: 0; left: 0;
 }
 #overlayCanvas {
-  position: absolute; inset: 0;
+  position: absolute;
+  top: 0; left: 0;
   width: 100%; height: 100%;
   pointer-events: none;
 }
@@ -107,12 +110,11 @@ main { flex: 1; position: relative; overflow: hidden; }
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  width: 82%;
+  width: 78%;
   aspect-ratio: 1 / 1.414; /* A4 Vertical exact ratio */
-  max-height: 84%;
+  max-height: 82%;
   pointer-events: none;
-  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.28);
-  border: 1px dashed rgba(255, 255, 255, 0.35);
+  border: 1.5px dashed rgba(34, 197, 94, 0.4);
   border-radius: 8px;
 }
 .corner {
