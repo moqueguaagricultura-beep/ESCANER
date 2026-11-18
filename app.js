@@ -188,14 +188,37 @@ async function startCamera() {
     const constraints = {
       video: {
         facingMode: { ideal: 'environment' },
-        width: { ideal: 1920 },
-        height: { ideal: 1080 },
+        width: { min: 1280, ideal: 1920, max: 3840 },
+        height: { min: 720, ideal: 1080, max: 2160 },
+        // Enhanced focus & exposure for documents/text
+        focusMode: { ideal: 'continuous' },
+        whiteBalanceMode: { ideal: 'continuous' },
+        exposureMode: { ideal: 'continuous' }
       },
       audio: false,
     };
     state.stream = await navigator.mediaDevices.getUserMedia(constraints);
     video.srcObject = state.stream;
     await video.play();
+
+    // Apply continuous auto-focus if supported by the browser/hardware
+    try {
+      const track = state.stream.getVideoTracks()[0];
+      const capabilities = track.getCapabilities ? track.getCapabilities() : {};
+      const advanced = [];
+      if (capabilities.focusMode && capabilities.focusMode.includes('continuous')) {
+        advanced.push({ focusMode: 'continuous' });
+      }
+      if (capabilities.whiteBalanceMode && capabilities.whiteBalanceMode.includes('continuous')) {
+        advanced.push({ whiteBalanceMode: 'continuous' });
+      }
+      if (advanced.length > 0 && track.applyConstraints) {
+        await track.applyConstraints({ advanced });
+      }
+    } catch (e) {
+      console.log('Focus constraint note:', e);
+    }
+
     syncOverlaySize();
     startAutoDetection();
   } catch (err) {
@@ -214,12 +237,30 @@ function showNoCameraMsg(msg) {
     </div>`;
 }
 
+function getVideoRenderBox() {
+  const vw = video.videoWidth || 1920;
+  const vh = video.videoHeight || 1080;
+  const cw = overlayCanvas.width || overlayCanvas.offsetWidth;
+  const ch = overlayCanvas.height || overlayCanvas.offsetHeight;
+
+  // Since #video uses object-fit: cover
+  const scale = Math.max(cw / vw, ch / vh);
+  const rw = vw * scale;
+  const rh = vh * scale;
+  const rx = (cw - rw) / 2;
+  const ry = (ch - rh) / 2;
+
+  return { rx, ry, rw, rh, vw, vh };
+}
+
 function syncOverlaySize() {
-  overlayCanvas.width  = video.videoWidth  || overlayCanvas.offsetWidth;
-  overlayCanvas.height = video.videoHeight || overlayCanvas.offsetHeight;
+  const rect = overlayCanvas.getBoundingClientRect();
+  overlayCanvas.width  = rect.width || window.innerWidth;
+  overlayCanvas.height = rect.height || (window.innerHeight - 150);
 }
 
 video.addEventListener('loadedmetadata', syncOverlaySize);
+window.addEventListener('resize', syncOverlaySize);
 
 // ─────────────────────────────────────────
 //  AUTO DOCUMENT DETECTION
@@ -245,10 +286,7 @@ function clearOverlay() {
 
 function detectDocument() {
   if (!video.videoWidth) return;
-  const vw = video.videoWidth;
-  const vh = video.videoHeight;
-  overlayCanvas.width = vw;
-  overlayCanvas.height = vh;
+  const { rx, ry, rw, rh, vw, vh } = getVideoRenderBox();
 
   // Sample video frame into temp canvas for fast corner analysis
   const tmpW = 320, tmpH = Math.round(vh / vw * 320);
@@ -262,37 +300,42 @@ function detectDocument() {
 
   clearOverlay();
   if (corners) {
-    const scaleX = vw / tmpW;
-    const scaleY = vh / tmpH;
-
-    // Convert corners to full video coordinates
-    const scaledCorners = {
-      tl: { x: corners.tl.x * scaleX, y: corners.tl.y * scaleY },
-      tr: { x: corners.tr.x * scaleX, y: corners.tr.y * scaleY },
-      br: { x: corners.br.x * scaleX, y: corners.br.y * scaleY },
-      bl: { x: corners.bl.x * scaleX, y: corners.bl.y * scaleY }
+    // Normalized (0..1) relative to full camera sensor
+    const normCorners = {
+      tl: { x: corners.tl.x / tmpW, y: corners.tl.y / tmpH },
+      tr: { x: corners.tr.x / tmpW, y: corners.tr.y / tmpH },
+      br: { x: corners.br.x / tmpW, y: corners.br.y / tmpH },
+      bl: { x: corners.bl.x / tmpW, y: corners.bl.y / tmpH }
     };
 
-    // Draw polygon connecting all 4 detected corners
+    // Screen coordinates mapped to exactly where video pixels appear on display
+    const screenCorners = {
+      tl: { x: rx + normCorners.tl.x * rw, y: ry + normCorners.tl.y * rh },
+      tr: { x: rx + normCorners.tr.x * rw, y: ry + normCorners.tr.y * rh },
+      br: { x: rx + normCorners.br.x * rw, y: ry + normCorners.br.y * rh },
+      bl: { x: rx + normCorners.bl.x * rw, y: ry + normCorners.bl.y * rh }
+    };
+
+    // Draw polygon connecting all 4 detected corners directly over document
     overlayCtx.save();
     overlayCtx.strokeStyle = 'rgba(34, 197, 94, 0.95)';
-    overlayCtx.fillStyle = 'rgba(34, 197, 94, 0.12)';
+    overlayCtx.fillStyle = 'rgba(34, 197, 94, 0.15)';
     overlayCtx.lineWidth = 3;
     overlayCtx.beginPath();
-    overlayCtx.moveTo(scaledCorners.tl.x, scaledCorners.tl.y);
-    overlayCtx.lineTo(scaledCorners.tr.x, scaledCorners.tr.y);
-    overlayCtx.lineTo(scaledCorners.br.x, scaledCorners.br.y);
-    overlayCtx.lineTo(scaledCorners.bl.x, scaledCorners.bl.y);
+    overlayCtx.moveTo(screenCorners.tl.x, screenCorners.tl.y);
+    overlayCtx.lineTo(screenCorners.tr.x, screenCorners.tr.y);
+    overlayCtx.lineTo(screenCorners.br.x, screenCorners.br.y);
+    overlayCtx.lineTo(screenCorners.bl.x, screenCorners.bl.y);
     overlayCtx.closePath();
     overlayCtx.fill();
     overlayCtx.stroke();
 
     // Draw high-visibility corner target marks at each of the 4 corners
     const pts = [
-      { p: scaledCorners.tl, label: 'TL', dx: 1, dy: 1 },
-      { p: scaledCorners.tr, label: 'TR', dx: -1, dy: 1 },
-      { p: scaledCorners.br, label: 'BR', dx: -1, dy: -1 },
-      { p: scaledCorners.bl, label: 'BL', dx: 1, dy: -1 }
+      { p: screenCorners.tl, label: 'TL', dx: 1, dy: 1 },
+      { p: screenCorners.tr, label: 'TR', dx: -1, dy: 1 },
+      { p: screenCorners.br, label: 'BR', dx: -1, dy: -1 },
+      { p: screenCorners.bl, label: 'BL', dx: 1, dy: -1 }
     ];
 
     pts.forEach(({ p, dx, dy }) => {
@@ -301,12 +344,12 @@ function detectDocument() {
       overlayCtx.arc(p.x, p.y, 7, 0, 2 * Math.PI);
       overlayCtx.fillStyle = '#22c55e';
       overlayCtx.fill();
-      overlayCtx.lineWidth = 2;
+      overlayCtx.lineWidth = 2.5;
       overlayCtx.strokeStyle = '#ffffff';
       overlayCtx.stroke();
 
       // Corner bracket
-      const bSize = 22;
+      const bSize = 24;
       overlayCtx.beginPath();
       overlayCtx.lineWidth = 4;
       overlayCtx.strokeStyle = '#22c55e';
@@ -318,12 +361,7 @@ function detectDocument() {
 
     overlayCtx.restore();
 
-    state.detectedCorners = {
-      tl: { x: scaledCorners.tl.x / vw, y: scaledCorners.tl.y / vh },
-      tr: { x: scaledCorners.tr.x / vw, y: scaledCorners.tr.y / vh },
-      br: { x: scaledCorners.br.x / vw, y: scaledCorners.br.y / vh },
-      bl: { x: scaledCorners.bl.x / vw, y: scaledCorners.bl.y / vh }
-    };
+    state.detectedCorners = normCorners;
     hintText.textContent = state.autoCapture 
       ? '✓ Documento detectado: ¡Mantén quieto para auto-disparo!' 
       : '✓ 4 Esquinas Encuadradas — ¡Captura!';
@@ -423,23 +461,28 @@ function findA4Corners(imageData, w, h) {
   }
 
   // 4. Find the 4 extreme vertices:
-  // TL: minimizes (x + y * 1.1)
-  // TR: maximizes (x - y * 1.1)
-  // BR: maximizes (x + y * 1.1)
-  // BL: minimizes (x - y * 1.1)
+  // We use 4 directional projections (TL, TR, BR, BL)
   let tl = pts[0], tr = pts[0], br = pts[0], bl = pts[0];
-  let minSum = Infinity, maxSum = -Infinity;
-  let minDiff = Infinity, maxDiff = -Infinity;
+  let minTL = Infinity, maxTR = -Infinity;
+  let maxBR = -Infinity, minBL = Infinity;
 
   for (let i = 0; i < pts.length; i++) {
     const p = pts[i];
-    const s = p.x + p.y * 1.15;
-    const d = p.x - p.y * 1.15;
+    // Top-Left: minimizes (x + y)
+    const valTL = p.x + p.y * 1.0;
+    if (valTL < minTL) { minTL = valTL; tl = p; }
 
-    if (s < minSum) { minSum = s; tl = p; }
-    if (s > maxSum) { maxSum = s; br = p; }
-    if (d < minDiff) { minDiff = d; bl = p; }
-    if (d > maxDiff) { maxDiff = d; tr = p; }
+    // Top-Right: maximizes (x - y)
+    const valTR = p.x - p.y * 1.0;
+    if (valTR > maxTR) { maxTR = valTR; tr = p; }
+
+    // Bottom-Right: maximizes (x + y)
+    const valBR = p.x + p.y * 1.0;
+    if (valBR > maxBR) { maxBR = valBR; br = p; }
+
+    // Bottom-Left: minimizes (x - y)
+    const valBL = p.x - p.y * 1.0;
+    if (valBL < minBL) { minBL = valBL; bl = p; }
   }
 
   // Check dimensions of the detected quad
@@ -451,14 +494,19 @@ function findA4Corners(imageData, w, h) {
   const avgW = (topW + botW) / 2;
   const avgH = (leftH + rightH) / 2;
 
-  // Minimum size: paper must occupy at least 25% width & 30% height
-  if (avgW < w * 0.25 || avgH < h * 0.30) {
+  // Minimum size: paper must occupy at least 25% width & 25% height
+  if (avgW < w * 0.25 || avgH < h * 0.25) {
     return null;
   }
 
-  // Aspect ratio check: must be predominantly vertical (height > width)
+  // Aspect ratio check (allow perspective angles and horizontal/vertical documents)
   const ratio = avgH / avgW;
-  if (ratio < 0.95 || ratio > 2.3) {
+  if (ratio < 0.45 || ratio > 2.8) {
+    return null;
+  }
+
+  // Geometry validation: verify that points form a convex quad without crossing lines
+  if (tl.x >= tr.x || bl.x >= br.x || tl.y >= bl.y || tr.y >= br.y) {
     return null;
   }
 
@@ -701,19 +749,33 @@ function unwarp4CornersToA4(srcCanvas, cornersNorm, vw, vh) {
       const wDenom = g * u + hv;
       const invDenom = 1.0 / wDenom;
 
-      const sx = (a * u + bv) * invDenom;
-      const sy = (d * u + ev) * invDenom;
-
-      const isx = Math.round(sx);
-      const isy = Math.round(sy);
+      const fx = (a * u + bv) * invDenom;
+      const fy = (d * u + ev) * invDenom;
 
       const dIndex = rowOffset + (dx << 2);
 
-      if (isx >= 0 && isx < vw && isy >= 0 && isy < vh) {
-        const sIndex = (isy * vw + isx) << 2;
-        dPixels[dIndex]     = sPixels[sIndex];
-        dPixels[dIndex + 1] = sPixels[sIndex + 1];
-        dPixels[dIndex + 2] = sPixels[sIndex + 2];
+      if (fx >= 0 && fx < vw - 1 && fy >= 0 && fy < vh - 1) {
+        // Bilinear interpolation for sharp, legible, non-pixelated letters
+        const x0 = fx | 0;
+        const y0 = fy | 0;
+        const x1 = x0 + 1;
+        const y1 = y0 + 1;
+
+        const wx1 = fx - x0;
+        const wx0 = 1.0 - wx1;
+        const wy1 = fy - y0;
+        const wy0 = 1.0 - wy1;
+
+        const idx00 = (y0 * vw + x0) << 2;
+        const idx10 = (y0 * vw + x1) << 2;
+        const idx01 = (y1 * vw + x0) << 2;
+        const idx11 = (y1 * vw + x1) << 2;
+
+        for (let c = 0; c < 3; c++) {
+          const top = wx0 * sPixels[idx00 + c] + wx1 * sPixels[idx10 + c];
+          const bot = wx0 * sPixels[idx01 + c] + wx1 * sPixels[idx11 + c];
+          dPixels[dIndex + c] = (wy0 * top + wy1 * bot) | 0;
+        }
         dPixels[dIndex + 3] = 255;
       } else {
         dPixels[dIndex]     = 255;
@@ -729,7 +791,7 @@ function unwarp4CornersToA4(srcCanvas, cornersNorm, vw, vh) {
 }
 
 /**
- * Flattens lighting, improves text contrast and cleans shadows for professional flat A4 scan.
+ * Flattens lighting, improves text contrast and sharpens letters for professional high-clarity A4 scan.
  */
 function enhanceScannedDocument(srcCanvas) {
   const w = srcCanvas.width;
@@ -750,18 +812,37 @@ function enhanceScannedDocument(srcCanvas) {
     let r = d[i], g = d[i + 1], b = d[i + 2];
     const lum = (r * 0.299 + g * 0.587 + b * 0.114);
 
-    // If pixel is paper background (bright), push towards pure white
-    if (lum > 140) {
-      const boost = 1.0 + (lum - 140) / 115 * 0.35;
+    if (lum > 135) {
+      const boost = 1.0 + (lum - 135) / 120 * 0.35;
       d[i]     = Math.min(255, (r * boost) | 0);
       d[i + 1] = Math.min(255, (g * boost) | 0);
       d[i + 2] = Math.min(255, (b * boost) | 0);
     } else {
-      // Text and dark strokes: deepen contrast
-      const cut = 0.88;
+      const cut = 0.85;
       d[i]     = (r * cut) | 0;
       d[i + 1] = (g * cut) | 0;
       d[i + 2] = (b * cut) | 0;
+    }
+  }
+
+  // Quick 3x3 sharpening pass to make text crystal clear & readable
+  const copy = new Uint8ClampedArray(d);
+  const stride = w * 4;
+  for (let y = 1; y < h - 1; y++) {
+    const yOffset = y * stride;
+    for (let x = 1; x < w - 1; x++) {
+      const idx = yOffset + (x << 2);
+      for (let c = 0; c < 3; c++) {
+        const center = copy[idx + c];
+        const up     = copy[idx - stride + c];
+        const down   = copy[idx + stride + c];
+        const left   = copy[idx - 4 + c];
+        const right  = copy[idx + 4 + c];
+
+        // Unsharp mask kernel: center * 1.5 - (up+down+left+right) * 0.125
+        const sharp = center * 1.5 - (up + down + left + right) * 0.125;
+        d[idx + c] = Math.max(0, Math.min(255, sharp | 0));
+      }
     }
   }
 
@@ -1583,6 +1664,97 @@ function setupEventListeners() {
       showToast(`Modo: ${modeNames[state.scanMode]}`);
     });
   });
+
+  // Preview view buttons
+  if (btnBackToCamera) {
+    btnBackToCamera.addEventListener('click', () => {
+      state.currentCaptured = null;
+      showView('cameraView');
+    });
+  }
+  if (btnConfirmPage) {
+    btnConfirmPage.addEventListener('click', confirmPage);
+  }
+  if (btnNextPage) {
+    btnNextPage.addEventListener('click', nextPage); // ★ SIGUIENTE PÁGINA ★
+  }
+
+  if (btnRotLeft) {
+    btnRotLeft.addEventListener('click', () => {
+      previewRotation = (previewRotation - 90 + 360) % 360;
+      renderPreview();
+    });
+  }
+  if (btnRotRight) {
+    btnRotRight.addEventListener('click', () => {
+      previewRotation = (previewRotation + 90) % 360;
+      renderPreview();
+    });
+  }
+
+  // Filters toggle & selection
+  if (btnFilter) {
+    btnFilter.addEventListener('click', () => {
+      const isVisible = !filterPanel.classList.contains('hidden');
+      filterPanel.classList.toggle('hidden', isVisible);
+      sliderPanel.classList.add('hidden');
+    });
+  }
+
+  filterPanel.querySelectorAll('.filter-opt').forEach(btn => {
+    btn.addEventListener('click', () => {
+      filterPanel.querySelectorAll('.filter-opt').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      previewFilter = btn.dataset.filter;
+      renderPreview();
+    });
+  });
+
+  // Brightness / Contrast
+  if (btnBright) {
+    btnBright.addEventListener('click', () => {
+      currentAdjType = 'brightness';
+      sliderLabel.textContent = 'Brillo';
+      adjSlider.value = previewBrightness;
+      sliderVal.textContent = previewBrightness;
+      sliderPanel.classList.remove('hidden');
+      filterPanel.classList.add('hidden');
+    });
+  }
+  if (btnContrast) {
+    btnContrast.addEventListener('click', () => {
+      currentAdjType = 'contrast';
+      sliderLabel.textContent = 'Contraste';
+      adjSlider.value = previewContrast;
+      sliderVal.textContent = previewContrast;
+      sliderPanel.classList.remove('hidden');
+      filterPanel.classList.add('hidden');
+    });
+  }
+  if (adjSlider) {
+    adjSlider.addEventListener('input', () => {
+      const v = parseInt(adjSlider.value);
+      sliderVal.textContent = v;
+      if (currentAdjType === 'brightness') previewBrightness = v;
+      else previewContrast = v;
+      renderPreview();
+    });
+  }
+  if (btnApplyAdj) {
+    btnApplyAdj.addEventListener('click', () => {
+      sliderPanel.classList.add('hidden');
+      renderPreview();
+    });
+  }
+  if (btnResetAdj) {
+    btnResetAdj.addEventListener('click', () => {
+      adjSlider.value = 0;
+      sliderVal.textContent = 0;
+      if (currentAdjType === 'brightness') previewBrightness = 0;
+      else previewContrast = 0;
+      renderPreview();
+    });
+  }
 
   // Crop / Adjust corners button (OneDrive style interactive 4-corner editor)
   btnCrop.addEventListener('click', openCropModal);
