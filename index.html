@@ -51,11 +51,11 @@
         <div class="camera-wrapper">
           <video id="video" autoplay playsinline muted></video>
           <canvas id="overlayCanvas"></canvas>
-          <div class="camera-frame">
-            <div class="corner tl"></div>
-            <div class="corner tr"></div>
-            <div class="corner bl"></div>
-            <div class="corner br"></div>
+          <div id="cameraFrame" class="camera-frame">
+            <div class="corner-handle tl" data-corner="tl"></div>
+            <div class="corner-handle tr" data-corner="tr"></div>
+            <div class="corner-handle bl" data-corner="bl"></div>
+            <div class="corner-handle br" data-corner="br"></div>
           </div>
           <div id="docDetector" class="doc-overlay hidden"></div>
           <div class="camera-hints">
@@ -66,16 +66,23 @@
 
         <!-- CAMERA CONTROLS -->
         <div class="camera-controls">
+          <!-- Top Row: Flash, Auto-Capture, Batch -->
           <div class="ctrl-row ctrl-row-top">
-            <button id="btnAutoDetect" class="ctrl-btn secondary active" title="Detección Automática de Bordes">
-              <span class="icon">📐</span>
-              <span class="label">Auto A4</span>
-            </button>
-            <button id="btnContinuous" class="ctrl-btn secondary" title="Modo Ráfaga / Rápido para escanear hojas seguidas">
+            <button id="btnFlash" class="ctrl-btn secondary" title="Linterna / Flash">
               <span class="icon">⚡</span>
+              <span class="label">Flash</span>
+            </button>
+            <button id="btnAutoCapture" class="ctrl-btn secondary" title="Disparo Automático al detectar quietud">
+              <span class="icon">🎯</span>
+              <span class="label">Auto-Disparo</span>
+            </button>
+            <button id="btnContinuous" class="ctrl-btn secondary" title="Modo Multipágina Rápido">
+              <span class="icon">📑</span>
               <span class="label">Ráfaga</span>
             </button>
           </div>
+
+          <!-- Bottom Main Row: Gallery, Shutter, View Pages -->
           <div class="ctrl-row ctrl-row-main">
             <button id="btnGallery" class="ctrl-btn secondary round" title="Importar imagen">📁</button>
             <button id="btnCapture" class="capture-btn" title="Capturar">
@@ -84,6 +91,16 @@
             <button id="btnViewPages" class="ctrl-btn secondary round" title="Ver páginas">
               <span id="miniCount">0</span>📄
             </button>
+          </div>
+
+          <!-- Mode Selector Strip (OneDrive style) -->
+          <div class="mode-selector-wrap">
+            <div class="mode-selector" id="modeSelector">
+              <button class="mode-btn" data-mode="whiteboard">PIZARRA</button>
+              <button class="mode-btn active" data-mode="document">DOCUMENTO</button>
+              <button class="mode-btn" data-mode="card">TARJETA</button>
+              <button class="mode-btn" data-mode="photo">FOTO</button>
+            </div>
           </div>
         </div>
 
@@ -137,11 +154,12 @@
         </div>
 
         <div id="filterPanel" class="filter-panel hidden">
-          <button class="filter-opt active" data-filter="original">Original</button>
-          <button class="filter-opt" data-filter="bw">B&N</button>
-          <button class="filter-opt" data-filter="grayscale">Gris</button>
-          <button class="filter-opt" data-filter="enhance">Mejorar</button>
-          <button class="filter-opt" data-filter="magic">Mágico</button>
+          <button class="filter-opt active" data-filter="document">📄 Documento</button>
+          <button class="filter-opt" data-filter="whiteboard">🖍️ Pizarra</button>
+          <button class="filter-opt" data-filter="magic">✨ Mágico</button>
+          <button class="filter-opt" data-filter="grayscale">🩶 Gris</button>
+          <button class="filter-opt" data-filter="bw">⬛ B&N Puro</button>
+          <button class="filter-opt" data-filter="original">📷 Original</button>
         </div>
         <div id="sliderPanel" class="slider-panel hidden">
           <label id="sliderLabel">Brillo</label>
@@ -174,6 +192,9 @@
             </button>
           </div>
           <div class="action-row">
+            <button id="btnExportJPG" class="action-btn secondary">
+              🖼️ Guardar JPGs
+            </button>
             <button id="btnSharePDF" class="action-btn share">
               📤 Compartir PDF
             </button>
@@ -182,6 +203,41 @@
       </section>
 
     </main>
+
+    <!-- ===== CROP & PERSPECTIVE ADJUST MODAL (LUPA / ONEDRIVE STYLE) ===== -->
+    <div id="cropModal" class="modal hidden">
+      <div class="modal-content crop-modal-content">
+        <div class="modal-header">
+          <span>Ajustar esquinas</span>
+          <button id="btnCloseCrop">✕</button>
+        </div>
+        <div class="crop-editor-container" id="cropEditorContainer">
+          <canvas id="cropCanvas"></canvas>
+          <!-- SVG polygon connecting the 4 handles -->
+          <svg id="cropSvgOverlay" class="crop-svg-overlay">
+            <polygon id="cropPolygon" points="0,0 0,0 0,0 0,0" />
+            <line id="cropLine1" class="crop-poly-line" />
+            <line id="cropLine2" class="crop-poly-line" />
+            <line id="cropLine3" class="crop-poly-line" />
+            <line id="cropLine4" class="crop-poly-line" />
+          </svg>
+          <!-- 4 movable Corner handles -->
+          <div class="corner-pin" id="pinTL" data-corner="tl"></div>
+          <div class="corner-pin" id="pinTR" data-corner="tr"></div>
+          <div class="corner-pin" id="pinBR" data-corner="br"></div>
+          <div class="corner-pin" id="pinBL" data-corner="bl"></div>
+          <!-- Corner Magnifier (Lupa OneDrive) -->
+          <div id="magnifier" class="crop-magnifier hidden">
+            <canvas id="magnifierCanvas" width="130" height="130"></canvas>
+            <div class="magnifier-crosshair"></div>
+          </div>
+        </div>
+        <div class="crop-modal-footer">
+          <button id="btnResetCrop" class="edit-btn">Reajustar bordes</button>
+          <button id="btnApplyCrop" class="edit-btn primary">Listo ✓</button>
+        </div>
+      </div>
+    </div>
 
     <!-- ===== PAGE EDIT MODAL ===== -->
     <div id="pageEditModal" class="modal hidden">

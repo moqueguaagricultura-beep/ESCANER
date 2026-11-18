@@ -17,19 +17,28 @@
 // ─────────────────────────────────────────
 const state = {
   pages: [],           // [{dataURL, rotation, filter}]
-  currentCaptured: null,  // temp canvas for preview
+  currentCaptured: null,  // temp canvas for preview (processed)
+  rawCapturedCanvas: null, // raw full frame for corner cropping
+  currentCorners: null,    // {tl, tr, br, bl} normalized
   editingIndex: -1,    // which page is being edited in modal
   stream: null,
   facingMode: 'environment',
   flashEnabled: false,
   autoDetect: true,
+  autoCapture: false,   // Auto-shoot when document is steady
   perspCorrect: true,
+  scanMode: 'document', // 'whiteboard' | 'document' | 'card' | 'photo'
   pdfQuality: 0.8,
   detectionInterval: null,
   detectedRect: null,   // {x,y,w,h} relative to video
   detectedCorners: null, // {tl, tr, br, bl} normalized
   continuousMode: false, // fast continuous scan mode
 };
+
+// Auto-capture stability tracker
+let stableCornerCount = 0;
+let lastStableCorner = null;
+let autoCaptureTriggered = false;
 
 // A4 output dimensions (pixels at 150 DPI)
 const A4_W = 1240;
@@ -56,7 +65,8 @@ const pagesView    = $('pagesView');
 
 // Buttons
 const btnCapture    = $('btnCapture');
-const btnAutoDetect = $('btnAutoDetect');
+const btnFlash      = $('btnFlash');
+const btnAutoCapture = $('btnAutoCapture');
 const btnContinuous = $('btnContinuous');    // ← Fast continuous scan
 const btnGallery    = $('btnGallery');
 const btnViewPages  = $('btnViewPages');
@@ -65,7 +75,7 @@ const btnSettings   = $('btnSettings');
 
 const btnBackToCamera  = $('btnBackToCamera');
 const btnConfirmPage   = $('btnConfirmPage');
-const btnNextPage      = $('btnNextPage');      // ← NEW: "Siguiente Página"
+const btnNextPage      = $('btnNextPage');      // ← "Siguiente Página"
 const btnRotLeft       = $('btnRotLeft');
 const btnRotRight      = $('btnRotRight');
 const btnFilter        = $('btnFilter');
@@ -77,6 +87,7 @@ const btnBackFromPages = $('btnBackFromPages');
 const btnDeleteAll     = $('btnDeleteAll');
 const btnAddMorePages  = $('btnAddMorePages');
 const btnExportPDF     = $('btnExportPDF');
+const btnExportJPG     = $('btnExportJPG');
 const btnSharePDF      = $('btnSharePDF');
 
 const filterPanel  = $('filterPanel');
@@ -86,6 +97,26 @@ const sliderVal    = $('sliderVal');
 const sliderLabel  = $('sliderLabel');
 const btnApplyAdj  = $('btnApplyAdj');
 const btnResetAdj  = $('btnResetAdj');
+
+// Mode buttons
+const modeBtns = document.querySelectorAll('.mode-btn');
+
+// Crop Modal Elements (OneDrive / Lens Corner Adjuster)
+const cropModal          = $('cropModal');
+const btnCloseCrop       = $('btnCloseCrop');
+const btnResetCrop       = $('btnResetCrop');
+const btnApplyCrop       = $('btnApplyCrop');
+const cropCanvas         = $('cropCanvas');
+const cropCtx            = cropCanvas ? cropCanvas.getContext('2d') : null;
+const cropPolygon        = $('cropPolygon');
+const cropEditorContainer = $('cropEditorContainer');
+const magnifier          = $('magnifier');
+const magnifierCanvas    = $('magnifierCanvas');
+const magnifierCtx       = magnifierCanvas ? magnifierCanvas.getContext('2d') : null;
+const pinTL              = $('pinTL');
+const pinTR              = $('pinTR');
+const pinBR              = $('pinBR');
+const pinBL              = $('pinBL');
 
 // Modal page edit
 const pageEditModal = $('pageEditModal');
@@ -118,9 +149,10 @@ const fileNameInput = $('fileNameInput');
 const galleryInput = $('galleryInput');
 const hintText     = $('hintText');
 const flashOverlay = $('flashOverlay');
-const correctionBadge = $('correctionBadge');  // ← NEW
-const savedSoFarEl    = $('savedSoFar');        // ← NEW
-const previewPageNumEl = $('previewPageNum');   // ← NEW
+const correctionBadge = $('correctionBadge');
+const savedSoFarEl    = $('savedSoFar');
+const previewPageNumEl = $('previewPageNum');
+const cameraFrame     = $('cameraFrame');
 
 // preview adjustments state
 let previewRotation = 0;
@@ -292,11 +324,43 @@ function detectDocument() {
       br: { x: scaledCorners.br.x / vw, y: scaledCorners.br.y / vh },
       bl: { x: scaledCorners.bl.x / vw, y: scaledCorners.bl.y / vh }
     };
-    hintText.textContent = '✓ 4 Esquinas A4 Encuadradas — ¡Captura!';
+    hintText.textContent = state.autoCapture 
+      ? '✓ Documento detectado: ¡Mantén quieto para auto-disparo!' 
+      : '✓ 4 Esquinas Encuadradas — ¡Captura!';
     hintText.style.color = '#22c55e';
+
+    // Auto-Capture logic: if corners remain stable for 4 consecutive detection ticks (~1 sec)
+    if (state.autoCapture && !autoCaptureTriggered) {
+      if (lastStableCorner) {
+        const delta = Math.hypot(
+          state.detectedCorners.tl.x - lastStableCorner.tl.x,
+          state.detectedCorners.tl.y - lastStableCorner.tl.y
+        );
+        if (delta < 0.035) { // Very little camera shake
+          stableCornerCount++;
+          if (stableCornerCount >= 4) {
+            autoCaptureTriggered = true;
+            captureFrame();
+            setTimeout(() => {
+              autoCaptureTriggered = false;
+              stableCornerCount = 0;
+            }, 3000);
+          }
+        } else {
+          stableCornerCount = 0;
+        }
+      }
+      lastStableCorner = state.detectedCorners;
+    }
   } else {
     state.detectedCorners = null;
-    hintText.textContent = 'Alinea la hoja A4 vertical en las 4 esquinas';
+    stableCornerCount = 0;
+    lastStableCorner = null;
+    hintText.textContent = state.scanMode === 'whiteboard'
+      ? 'Alinea la pizarra en el visor'
+      : state.scanMode === 'card'
+      ? 'Alinea la tarjeta de presentación'
+      : 'Alinea el documento en las 4 esquinas';
     hintText.style.color = '';
   }
 }
@@ -456,14 +520,28 @@ async function captureFrame() {
     wasAutoCorrected = true;
   }
 
-  // Apply automatic enhancement (flatten shadows, whiten background, sharpen text)
-  processedCanvas = enhanceScannedDocument(processedCanvas);
+  let defaultFilter = 'document';
+  if (state.scanMode === 'whiteboard') defaultFilter = 'whiteboard';
+  else if (state.scanMode === 'photo') defaultFilter = 'original';
 
-  state.currentCaptured = processedCanvas;
+  state.currentCaptured   = processedCanvas;
+  state.rawCapturedCanvas = capCanvas;
+  state.currentCorners    = corners || {
+    tl: { x: 0.12, y: 0.08 },
+    tr: { x: 0.88, y: 0.08 },
+    br: { x: 0.88, y: 0.92 },
+    bl: { x: 0.12, y: 0.92 }
+  };
+
   previewRotation   = 0;
-  previewFilter     = 'original';
+  previewFilter     = defaultFilter;
   previewBrightness = 0;
   previewContrast   = 0;
+
+  // Sync active filter button in preview
+  filterPanel.querySelectorAll('.filter-opt').forEach(b => {
+    b.classList.toggle('active', b.dataset.filter === defaultFilter);
+  });
 
   if (previewPageNumEl) previewPageNumEl.textContent = state.pages.length + 1;
   updateSavedCounter();
@@ -472,8 +550,9 @@ async function captureFrame() {
   if (state.continuousMode) {
     saveCurrentPage();
     state.currentCaptured = null;
+    state.rawCapturedCanvas = null;
     updateUI();
-    showToast(`✓ Página ${state.pages.length} escaneada y encuadrada`);
+    showToast(`✓ Página ${state.pages.length} escaneada (${state.scanMode.toUpperCase()})`);
     return;
   }
 
@@ -797,32 +876,80 @@ function applyFilter(srcCanvas, filter, brightness = 0, contrast = 0) {
   const d = imgData.data;
 
   switch (filter) {
+    case 'document':
+      // OneDrive Document Filter: cleans dark backgrounds, whitens page, sharpens text
+      for (let i = 0; i < d.length; i += 4) {
+        let r = d[i], g = d[i+1], b = d[i+2];
+        const lum = (r * 0.299 + g * 0.587 + b * 0.114);
+        if (lum > 135) {
+          // Push page background to crisp paper white
+          const factor = 1.0 + (lum - 135) / 120 * 0.45;
+          d[i]   = Math.min(255, (r * factor) | 0);
+          d[i+1] = Math.min(255, (g * factor) | 0);
+          d[i+2] = Math.min(255, (b * factor) | 0);
+        } else {
+          // Darken ink / text
+          const ink = 0.82;
+          d[i]   = (r * ink) | 0;
+          d[i+1] = (g * ink) | 0;
+          d[i+2] = (b * ink) | 0;
+        }
+      }
+      break;
+
+    case 'whiteboard':
+      // OneDrive Whiteboard Filter: removes specular reflections/shadows, boosts colored markers
+      for (let i = 0; i < d.length; i += 4) {
+        let r = d[i], g = d[i+1], b = d[i+2];
+        const maxC = Math.max(r, g, b);
+        const minC = Math.min(r, g, b);
+        const sat = maxC > 0 ? (maxC - minC) / maxC : 0;
+        const lum = (r * 0.299 + g * 0.587 + b * 0.114);
+
+        if (sat > 0.18) {
+          // Color marker on board: preserve and boost marker saturation
+          d[i]   = clamp(r * 1.35);
+          d[i+1] = clamp(g * 1.35);
+          d[i+2] = clamp(b * 1.35);
+        } else if (lum > 125) {
+          // Whiteboard background: pure clean white
+          d[i] = d[i+1] = d[i+2] = 255;
+        } else {
+          // Black marker: deep solid black
+          d[i] = d[i+1] = d[i+2] = clamp(lum * 0.45);
+        }
+      }
+      break;
+
     case 'grayscale':
       for (let i = 0; i < d.length; i += 4) {
         const g = d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114;
         d[i] = d[i+1] = d[i+2] = g;
       }
       break;
+
     case 'bw':
+      // High contrast pure B&W
       for (let i = 0; i < d.length; i += 4) {
         const g = d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114;
-        const bw = g > 128 ? 255 : 0;
+        const bw = g > 132 ? 255 : 0;
         d[i] = d[i+1] = d[i+2] = bw;
       }
       break;
+
     case 'enhance':
-      // Increase contrast and clarity
       for (let i = 0; i < d.length; i += 4) {
         d[i]   = clamp(((d[i]   - 128) * 1.4) + 140);
         d[i+1] = clamp(((d[i+1] - 128) * 1.4) + 140);
         d[i+2] = clamp(((d[i+2] - 128) * 1.4) + 140);
       }
       break;
+
     case 'magic':
-      // Adaptive thresholding style (whitens background, darkens text)
+      // Adaptive thresholding style
       for (let i = 0; i < d.length; i += 4) {
         const g = d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114;
-        const enhanced = g > 180 ? 255 : g > 100 ? clamp((g - 100) * 1.5 + 100) : clamp(g * 0.6);
+        const enhanced = g > 175 ? 255 : g > 95 ? clamp((g - 95) * 1.55 + 95) : clamp(g * 0.55);
         d[i] = d[i+1] = d[i+2] = enhanced;
       }
       break;
@@ -1136,6 +1263,24 @@ async function downloadPDF() {
   pdf.save(name);
 }
 
+/**
+ * Export all pages as individual JPG files
+ */
+async function exportJPGs() {
+  if (state.pages.length === 0) {
+    alert('No hay páginas para guardar.');
+    return;
+  }
+  const baseName = fileNameInput.value.trim() || 'Escaneado';
+  state.pages.forEach((pg, i) => {
+    const a = document.createElement('a');
+    a.href = pg.dataURL;
+    a.download = `${baseName}_p${i + 1}.jpg`;
+    a.click();
+  });
+  showToast(`✓ ${state.pages.length} imágenes JPG descargadas`);
+}
+
 async function sharePDF() {
   const pdf = await exportPDF(false);
   if (!pdf) return;
@@ -1202,136 +1347,246 @@ function loadImage(src) {
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // ─────────────────────────────────────────
+//  ONEDRIVE CORNER ADJUSTMENT & LUPA
+// ─────────────────────────────────────────
+let cropScale = 1;
+let cropOffset = { x: 0, y: 0 };
+let activePin = null;
+let currentCropCorners = { tl: {x: 0, y: 0}, tr: {x: 0, y: 0}, br: {x: 0, y: 0}, bl: {x: 0, y: 0} };
+
+function openCropModal() {
+  if (!state.rawCapturedCanvas) return;
+  const raw = state.rawCapturedCanvas;
+  cropCanvas.width = raw.width;
+  cropCanvas.height = raw.height;
+  cropCtx.drawImage(raw, 0, 0);
+
+  // Initialize corners from state.currentCorners or fallback to 10% inset
+  currentCropCorners = JSON.parse(JSON.stringify(state.currentCorners || {
+    tl: { x: 0.1, y: 0.1 },
+    tr: { x: 0.9, y: 0.1 },
+    br: { x: 0.9, y: 0.9 },
+    bl: { x: 0.1, y: 0.9 }
+  }));
+
+  cropModal.classList.remove('hidden');
+  requestAnimationFrame(updateCropUI);
+}
+
+function updateCropUI() {
+  if (!cropEditorContainer || !cropCanvas) return;
+  const rect = cropCanvas.getBoundingClientRect();
+  const contRect = cropEditorContainer.getBoundingClientRect();
+
+  const cLeft = rect.left - contRect.left;
+  const cTop  = rect.top - contRect.top;
+  const cW    = rect.width;
+  const cH    = rect.height;
+
+  // Map normalized (0..1) corners to editor container pixels
+  const pTL = { x: cLeft + currentCropCorners.tl.x * cW, y: cTop + currentCropCorners.tl.y * cH };
+  const pTR = { x: cLeft + currentCropCorners.tr.x * cW, y: cTop + currentCropCorners.tr.y * cH };
+  const pBR = { x: cLeft + currentCropCorners.br.x * cW, y: cTop + currentCropCorners.br.y * cH };
+  const pBL = { x: cLeft + currentCropCorners.bl.x * cW, y: cTop + currentCropCorners.bl.y * cH };
+
+  // Position pins
+  pinTL.style.left = `${pTL.x}px`; pinTL.style.top = `${pTL.y}px`;
+  pinTR.style.left = `${pTR.x}px`; pinTR.style.top = `${pTR.y}px`;
+  pinBR.style.left = `${pBR.x}px`; pinBR.style.top = `${pBR.y}px`;
+  pinBL.style.left = `${pBL.x}px`; pinBL.style.top = `${pBL.y}px`;
+
+  // Update SVG polygon
+  cropPolygon.setAttribute('points', `${pTL.x},${pTL.y} ${pTR.x},${pTR.y} ${pBR.x},${pBR.y} ${pBL.x},${pBL.y}`);
+}
+
+function setupCropInteractions() {
+  const pins = [
+    { el: pinTL, key: 'tl' },
+    { el: pinTR, key: 'tr' },
+    { el: pinBR, key: 'br' },
+    { el: pinBL, key: 'bl' }
+  ];
+
+  let isDragging = false;
+  let dragCornerKey = null;
+
+  pins.forEach(({ el, key }) => {
+    const startDrag = (clientX, clientY) => {
+      isDragging = true;
+      dragCornerKey = key;
+      magnifier.classList.remove('hidden');
+      updateMagnifier(clientX, clientY, key);
+    };
+
+    el.addEventListener('mousedown', e => {
+      e.preventDefault();
+      startDrag(e.clientX, e.clientY);
+    });
+
+    el.addEventListener('touchstart', e => {
+      e.preventDefault();
+      const t = e.touches[0];
+      startDrag(t.clientX, t.clientY);
+    }, { passive: false });
+  });
+
+  const onMove = (clientX, clientY) => {
+    if (!isDragging || !dragCornerKey) return;
+    const rect = cropCanvas.getBoundingClientRect();
+    const nx = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    const ny = Math.max(0, Math.min(1, (clientY - rect.top) / rect.height));
+
+    currentCropCorners[dragCornerKey] = { x: nx, y: ny };
+    updateCropUI();
+    updateMagnifier(clientX, clientY, dragCornerKey);
+  };
+
+  const onEnd = () => {
+    if (!isDragging) return;
+    isDragging = false;
+    dragCornerKey = null;
+    magnifier.classList.add('hidden');
+  };
+
+  window.addEventListener('mousemove', e => onMove(e.clientX, e.clientY));
+  window.addEventListener('touchmove', e => {
+    if (isDragging) {
+      const t = e.touches[0];
+      onMove(t.clientX, t.clientY);
+    }
+  }, { passive: false });
+
+  window.addEventListener('mouseup', onEnd);
+  window.addEventListener('touchend', onEnd);
+
+  // Resize listener for crop UI
+  window.addEventListener('resize', () => {
+    if (!cropModal.classList.contains('hidden')) {
+      updateCropUI();
+    }
+  });
+
+  // Reset button in crop modal
+  btnResetCrop.addEventListener('click', () => {
+    currentCropCorners = {
+      tl: { x: 0.08, y: 0.08 },
+      tr: { x: 0.92, y: 0.08 },
+      br: { x: 0.92, y: 0.92 },
+      bl: { x: 0.08, y: 0.92 }
+    };
+    updateCropUI();
+  });
+
+  // Apply button in crop modal
+  btnApplyCrop.addEventListener('click', () => {
+    state.currentCorners = currentCropCorners;
+    const raw = state.rawCapturedCanvas;
+    const rectified = unwarp4CornersToA4(raw, state.currentCorners, raw.width, raw.height);
+    state.currentCaptured = enhanceScannedDocument(rectified);
+    cropModal.classList.add('hidden');
+    renderPreview();
+    showToast('✓ Esquinas ajustadas con éxito');
+  });
+
+  btnCloseCrop.addEventListener('click', () => {
+    cropModal.classList.add('hidden');
+  });
+}
+
+function updateMagnifier(clientX, clientY, cornerKey) {
+  if (!magnifier || !magnifierCanvas || !state.rawCapturedCanvas) return;
+  const contRect = cropEditorContainer.getBoundingClientRect();
+  const raw = state.rawCapturedCanvas;
+
+  // Position magnifier above touch finger / mouse
+  const magX = clientX - contRect.left;
+  const magY = clientY - contRect.top - 80;
+  magnifier.style.left = `${Math.max(10, Math.min(contRect.width - 130, magX - 60))}px`;
+  magnifier.style.top  = `${Math.max(10, Math.min(contRect.height - 130, magY))}px`;
+
+  // Draw 2.5x zoomed view into magnifierCanvas
+  const corner = currentCropCorners[cornerKey];
+  const srcX = corner.x * raw.width;
+  const srcY = corner.y * raw.height;
+  const zoomW = 80;
+  const zoomH = 80;
+
+  magnifierCtx.clearRect(0, 0, 130, 130);
+  magnifierCtx.drawImage(
+    raw,
+    srcX - zoomW / 2, srcY - zoomH / 2, zoomW, zoomH,
+    0, 0, 130, 130
+  );
+}
+
+// ─────────────────────────────────────────
+//  TORCH / FLASH CONTROL
+// ─────────────────────────────────────────
+async function toggleFlash() {
+  if (!state.stream) return;
+  const track = state.stream.getVideoTracks()[0];
+  if (!track) return;
+  const capabilities = track.getCapabilities ? track.getCapabilities() : {};
+  if (!capabilities.torch) {
+    showToast('Flash/Linterna no disponible en este dispositivo');
+    return;
+  }
+  state.flashEnabled = !state.flashEnabled;
+  try {
+    await track.applyConstraints({
+      advanced: [{ torch: state.flashEnabled }]
+    });
+    btnFlash.classList.toggle('active-flash', state.flashEnabled);
+    showToast(state.flashEnabled ? '⚡ Flash encendido' : 'Flash apagado');
+  } catch (err) {
+    showToast('No se pudo activar el flash');
+  }
+}
+
+// ─────────────────────────────────────────
 //  EVENT LISTENERS
 // ─────────────────────────────────────────
 function setupEventListeners() {
   // Capture
   btnCapture.addEventListener('click', captureFrame);
 
-  // Auto detect toggle
-  btnAutoDetect.addEventListener('click', () => {
-    state.autoDetect = !state.autoDetect;
-    btnAutoDetect.classList.toggle('active', state.autoDetect);
-    autoDetectToggle.checked = state.autoDetect;
-    if (!state.autoDetect) clearOverlay();
-  });
+  // Flash toggle
+  if (btnFlash) {
+    btnFlash.addEventListener('click', toggleFlash);
+  }
 
-  // Continuous / Fast scan mode toggle
-  btnContinuous.addEventListener('click', () => {
-    state.continuousMode = !state.continuousMode;
-    btnContinuous.classList.toggle('active', state.continuousMode);
-    if (state.continuousMode) {
-      showToast('⚡ Modo Rápido ACTIVADO — Dispara sin parar');
-    } else {
-      showToast('Modo Normal — Revisión activada');
-    }
-  });
+  // Auto-Capture toggle
+  if (btnAutoCapture) {
+    btnAutoCapture.addEventListener('click', () => {
+      state.autoCapture = !state.autoCapture;
+      btnAutoCapture.classList.toggle('active', state.autoCapture);
+      if (state.autoCapture) {
+        showToast('🎯 Auto-Disparo ACTIVADO — Mantén quieto el celular');
+      } else {
+        showToast('Auto-Disparo desactivado');
+      }
+    });
+  }
 
-  // Gallery
-  btnGallery.addEventListener('click', () => galleryInput.click());
-  galleryInput.addEventListener('change', e => {
-    if (e.target.files.length) importFromGallery([...e.target.files]);
-    galleryInput.value = '';
-  });
-
-  // View pages from camera
-  btnViewPages.addEventListener('click', () => showView('pagesView'));
-  btnPages.addEventListener('click', () => showView('pagesView'));
-
-  // Settings
-  btnSettings.addEventListener('click', () => settingsModal.classList.remove('hidden'));
-  btnCloseSettings.addEventListener('click', () => settingsModal.classList.add('hidden'));
-  pdfQualitySel.addEventListener('change', () => state.pdfQuality = parseFloat(pdfQualitySel.value));
-  autoDetectToggle.addEventListener('change', () => {
-    state.autoDetect = autoDetectToggle.checked;
-    btnAutoDetect.classList.toggle('active', state.autoDetect);
-  });
-  perspToggle.addEventListener('change', () => state.perspCorrect = perspToggle.checked);
-
-  // Preview view
-  btnBackToCamera.addEventListener('click', () => {
-    state.currentCaptured = null;
-    showView('cameraView');
-  });
-  btnConfirmPage.addEventListener('click', confirmPage);
-  btnNextPage.addEventListener('click', nextPage); // ★ SIGUIENTE PÁGINA ★
-
-  btnRotLeft.addEventListener('click', () => {
-    previewRotation = (previewRotation - 90 + 360) % 360;
-    renderPreview();
-  });
-  btnRotRight.addEventListener('click', () => {
-    previewRotation = (previewRotation + 90) % 360;
-    renderPreview();
-  });
-
-  // Filters
-  btnFilter.addEventListener('click', () => {
-    const isVisible = !filterPanel.classList.contains('hidden');
-    filterPanel.classList.toggle('hidden', isVisible);
-    sliderPanel.classList.add('hidden');
-  });
-
-  filterPanel.querySelectorAll('.filter-opt').forEach(btn => {
+  // OneDrive Scan Modes (Document, Whiteboard, Card, Photo)
+  modeBtns.forEach(btn => {
     btn.addEventListener('click', () => {
-      filterPanel.querySelectorAll('.filter-opt').forEach(b => b.classList.remove('active'));
+      modeBtns.forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
-      previewFilter = btn.dataset.filter;
-      renderPreview();
+      state.scanMode = btn.dataset.mode;
+      const modeNames = {
+        document: 'DOCUMENTO',
+        whiteboard: 'PIZARRA',
+        card: 'TARJETA',
+        photo: 'FOTO'
+      };
+      showToast(`Modo: ${modeNames[state.scanMode]}`);
     });
   });
 
-  // Brightness / Contrast
-  btnBright.addEventListener('click', () => {
-    currentAdjType = 'brightness';
-    sliderLabel.textContent = 'Brillo';
-    adjSlider.value = previewBrightness;
-    sliderVal.textContent = previewBrightness;
-    sliderPanel.classList.remove('hidden');
-    filterPanel.classList.add('hidden');
-  });
-  btnContrast.addEventListener('click', () => {
-    currentAdjType = 'contrast';
-    sliderLabel.textContent = 'Contraste';
-    adjSlider.value = previewContrast;
-    sliderVal.textContent = previewContrast;
-    sliderPanel.classList.remove('hidden');
-    filterPanel.classList.add('hidden');
-  });
-  adjSlider.addEventListener('input', () => {
-    const v = parseInt(adjSlider.value);
-    sliderVal.textContent = v;
-    if (currentAdjType === 'brightness') previewBrightness = v;
-    else previewContrast = v;
-    renderPreview();
-  });
-  btnApplyAdj.addEventListener('click', () => {
-    sliderPanel.classList.add('hidden');
-    renderPreview();
-  });
-  btnResetAdj.addEventListener('click', () => {
-    adjSlider.value = 0;
-    sliderVal.textContent = 0;
-    if (currentAdjType === 'brightness') previewBrightness = 0;
-    else previewContrast = 0;
-    renderPreview();
-  });
-
-  // Crop btn (basic — trims 5% all sides)
-  btnCrop.addEventListener('click', () => {
-    if (!state.currentCaptured) return;
-    const s = state.currentCaptured;
-    const margin = 0.05;
-    const x = Math.round(s.width * margin);
-    const y = Math.round(s.height * margin);
-    const w = Math.round(s.width  * (1 - 2*margin));
-    const h = Math.round(s.height * (1 - 2*margin));
-    const tmp = document.createElement('canvas');
-    tmp.width = w; tmp.height = h;
-    tmp.getContext('2d').drawImage(s, x, y, w, h, 0, 0, w, h);
-    state.currentCaptured = tmp;
-    renderPreview();
-  });
+  // Crop / Adjust corners button (OneDrive style interactive 4-corner editor)
+  btnCrop.addEventListener('click', openCropModal);
+  setupCropInteractions();
 
   // Pages view
   btnBackFromPages.addEventListener('click', () => showView('cameraView'));
@@ -1345,6 +1600,7 @@ function setupEventListeners() {
     }
   });
   btnExportPDF.addEventListener('click', downloadPDF);
+  if (btnExportJPG) btnExportJPG.addEventListener('click', exportJPGs);
   btnSharePDF.addEventListener('click', sharePDF);
 
   // Thumb strip click -> pages view
